@@ -1,0 +1,52 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write        # create tags + releases
+  pull-requests: write   # maintain the Release PR
+
+jobs:
+  release-please:
+    name: release-please + goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: maintain the Release PR on main. When a Release PR is merged,
+      # release-please creates a tag + GitHub Release and sets the outputs
+      # we gate the goreleaser step on.
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Everything below only runs on the merge of a Release PR — i.e. when
+      # release-please actually cut a new version.
+      - uses: actions/checkout@v6
+        if: ${{ steps.release.outputs.release_created }}
+        with:
+          fetch-depth: 0    # goreleaser wants the full git history
+
+      - uses: actions/setup-go@v6
+        if: ${{ steps.release.outputs.release_created }}
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: goreleaser release
+        if: ${{ steps.release.outputs.release_created }}
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT with Contents: read/write on peetzweg/homebrew-tap. Goreleaser's
+          # brews: block uses this to commit Formula/matcrawl.rb to the tap.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # CGO disabled (set in .goreleaser.yaml per-build). modernc.org/sqlite
+          # + the goolm build tag keep mautrix-go pure-Go too.

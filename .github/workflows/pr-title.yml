@@ -1,0 +1,41 @@
+name: PR title
+
+# Fail the PR if its title isn't a conventional commit. Matters because we
+# squash-merge, so the PR title becomes the commit message on main — and
+# release-please reads those to build the changelog.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  check:
+    name: conventional-commit title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Recognized types. Keep this aligned with whatever release-please
+          # surfaces in the changelog (fix/feat definitely; rest are nice to
+          # categorize even if they don't bump versions).
+          types: |
+            feat
+            fix
+            chore
+            docs
+            refactor
+            test
+            ci
+            build
+            perf
+            revert
+          # Scope is optional, lowercase when present: "feat(sync): ..."
+          requireScope: false
+          disallowScopes: ""
+          # Short subjects are fine; release-please handles wrapping.
+          validateSingleCommit: false

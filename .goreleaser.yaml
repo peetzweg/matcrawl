@@ -1,0 +1,86 @@
+version: 2
+
+project_name: matcrawl
+
+builds:
+  - id: matcrawl
+    main: ./cmd/matcrawl
+    binary: matcrawl
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    # goolm: pure-Go Olm so mautrix/crypto compiles without libolm. Keeps
+    # CGO_ENABLED=0 working, matching the family-wide pure-Go discipline.
+    tags:
+      - goolm
+    ldflags:
+      - -s -w -X github.com/peetzweg/matcrawl/internal/cli.version={{ .Version }}
+    targets:
+      - darwin_amd64
+      - darwin_arm64
+      - linux_amd64
+      - linux_arm64
+      - windows_amd64
+      - windows_arm64
+
+archives:
+  - id: bundles
+    ids:
+      - matcrawl
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+# release-please owns the GitHub Release body (it's auto-generated from
+# CHANGELOG.md). goreleaser only uploads artifacts to that existing release.
+release:
+  mode: keep-existing
+  prerelease: auto
+
+# release-please maintains CHANGELOG.md in the repo, so we disable
+# goreleaser's inline changelog generator to avoid duplication.
+changelog:
+  disable: true
+
+# Push a Homebrew formula to peetzweg/homebrew-tap as part of the release.
+# Requires the HOMEBREW_TAP_TOKEN secret in this repo (a fine-grained PAT
+# with Contents: read/write on peetzweg/homebrew-tap).
+# After a release: `brew tap peetzweg/tap && brew install matcrawl`.
+brews:
+  - name: matcrawl
+    repository:
+      owner: peetzweg
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/peetzweg/matcrawl
+    description: "Local-first Matrix archive crawler"
+    license: MIT
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    install: |
+      bin.install "matcrawl"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/matcrawl version")
+    caveats: |
+      Run `matcrawl login` to authenticate against your Matrix homeserver,
+      then `matcrawl keys import` with an Element room-keys export
+      (Element → Settings → Security & Privacy → Export E2E room keys) to
+      decrypt E2EE rooms.

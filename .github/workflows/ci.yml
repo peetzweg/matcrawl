@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify module cache
+        run: go mod verify
+
+      - name: Check go.mod tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
+
+      - name: Run govulncheck
+        run: '"$(go env GOPATH)/bin/govulncheck" -tags goolm ./...'
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: |
+          changed="$(gofmt -l .)"
+          if [ -n "$changed" ]; then
+            printf 'gofmt wants changes in:\n%s\n' "$changed"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet -tags goolm ./...
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test -tags goolm -count=1 ./...
+
+      - name: Build CLI
+        # goolm = pure-Go Olm so the binary stays CGO_ENABLED=0 (matches the
+        # *crawl family-wide discipline; see MATCRAWL.md §10).
+        run: go build -tags goolm -ldflags "-X github.com/peetzweg/matcrawl/internal/cli.version=ci" -o bin/matcrawl ./cmd/matcrawl
+
+      - name: Smoke test CLI control surface
+        run: |
+          set -euo pipefail
+          help_output="$(./bin/matcrawl --help 2>&1 || true)"
+          printf '%s\n' "$help_output"
+          printf '%s' "$help_output" | grep -q "matcrawl: Matrix archive CLI"
+          printf '%s' "$help_output" | grep -q "doctor"
+          printf '%s' "$help_output" | grep -q "sync"
+          printf '%s' "$help_output" | grep -q "search"
+          printf '%s' "$help_output" | grep -q "keys"
+          test "$(./bin/matcrawl version)" = "ci"
+          ./bin/matcrawl --json metadata | grep -q '"schema_version"'
+          # doctor must run cleanly on a CI runner with no session and no
+          # Element Desktop install.
+          ./bin/matcrawl --json doctor | grep -q '"matrix"'
