@@ -341,6 +341,50 @@ func (s *Store) ListRooms(ctx context.Context, filter RoomFilter) ([]Room, error
 	return out, rows.Err()
 }
 
+// ListUndecrypted returns messages that arrived as m.room.encrypted but
+// haven't been decrypted yet (decrypt_status = 'missing_keys' or 'failed').
+// Selects raw_json so callers can re-run them through OlmMachine after a
+// fresh key import.
+func (s *Store) ListUndecrypted(ctx context.Context, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		select room_id, event_id, sender, coalesce(sender_display_name,''),
+		       origin_server_ts, msgtype, coalesce(body,''), coalesce(formatted_body,''),
+		       was_encrypted, coalesce(decrypt_status,''), coalesce(decrypt_error,''),
+		       coalesce(attachments_json,''), coalesce(edits_json,''), coalesce(reactions_json,''),
+		       coalesce(thread_id,''), coalesce(reply_to_event_id,''), coalesce(raw_json,'')
+		from messages
+		where decrypt_status in ('missing_keys','failed') and coalesce(raw_json,'') <> ''
+		order by origin_server_ts asc
+		limit ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Message
+	for rows.Next() {
+		var m Message
+		var ts int64
+		var wasEnc int
+		if err := rows.Scan(
+			&m.RoomID, &m.EventID, &m.Sender, &m.SenderDisplayName,
+			&ts, &m.MsgType, &m.Body, &m.FormattedBody,
+			&wasEnc, &m.DecryptStatus, &m.DecryptError,
+			&m.AttachmentsJSON, &m.EditsJSON, &m.ReactionsJSON,
+			&m.ThreadID, &m.ReplyToEventID, &m.RawJSON,
+		); err != nil {
+			return nil, err
+		}
+		m.OriginServerTS = fromUnix(ts)
+		m.WasEncrypted = wasEnc != 0
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListMembers(ctx context.Context, roomID string) ([]RoomMember, error) {
 	if strings.TrimSpace(roomID) == "" {
 		return nil, errors.New("room id is required")
