@@ -85,8 +85,13 @@ func (r *runtime) dispatch(args []string) error {
 		return r.print(controlManifest())
 	case "status":
 		return r.runStatus(args[1:])
-	case "doctor", "login", "logout", "keys", "sync",
-		"rooms", "members", "messages", "search", "backup":
+	case "doctor":
+		return r.runDoctor(args[1:])
+	case "login":
+		return r.runLogin(args[1:])
+	case "logout":
+		return r.runLogout(args[1:])
+	case "keys", "sync", "rooms", "members", "messages", "search", "backup":
 		return notImplemented(args[0])
 	default:
 		return usageErr(fmt.Errorf("unknown command %q", args[0]))
