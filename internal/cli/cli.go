@@ -91,7 +91,17 @@ func (r *runtime) dispatch(args []string) error {
 		return r.runLogin(args[1:])
 	case "logout":
 		return r.runLogout(args[1:])
-	case "keys", "sync", "rooms", "members", "messages", "search", "backup":
+	case "sync":
+		return r.runSync(args[1:])
+	case "rooms":
+		return r.runRooms(args[1:])
+	case "members":
+		return r.runMembers(args[1:])
+	case "messages":
+		return r.runMessages(args[1:])
+	case "search":
+		return r.runSearch(args[1:])
+	case "keys", "backup":
 		return notImplemented(args[0])
 	default:
 		return usageErr(fmt.Errorf("unknown command %q", args[0]))
