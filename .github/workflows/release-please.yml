@@ -16,7 +16,7 @@ jobs:
       # Step 1: maintain the Release PR on main. When a Release PR is merged,
       # release-please creates a tag + GitHub Release and sets the outputs
       # we gate the goreleaser step on.
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: release
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
