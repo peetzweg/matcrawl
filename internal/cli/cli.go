@@ -104,7 +104,7 @@ func (r *runtime) dispatch(args []string) error {
 	case "keys":
 		return r.runKeys(args[1:])
 	case "backup":
-		return notImplemented(args[0])
+		return r.runBackup(args[1:])
 	default:
 		return usageErr(fmt.Errorf("unknown command %q", args[0]))
 	}
