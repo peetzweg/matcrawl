@@ -18,6 +18,12 @@ jobs:
   analyze:
     name: analyze
     runs-on: ubuntu-latest
+    # CodeQL's SARIF upload requires Code Scanning to be enabled for the
+    # repository. On private repos that's a paid GHAS feature, so the upload
+    # fails and the job goes red. Gating on public visibility makes this a
+    # no-op while matcrawl is private; flipping the repo public re-enables
+    # the scan automatically without a workflow edit.
+    if: github.event.repository.visibility == 'public'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
