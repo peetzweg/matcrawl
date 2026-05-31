@@ -7,7 +7,7 @@ require (
 	go.mau.fi/util v0.9.9
 	golang.org/x/term v0.43.0
 	maunium.net/go/mautrix v0.28.0
-	modernc.org/sqlite v1.50.1
+	modernc.org/sqlite v1.51.0
 )
 
 require (
