@@ -100,8 +100,13 @@ type MessageFilter struct {
 }
 
 type RoomFilter struct {
-	Limit         int
+	// Limit caps the result set. Zero or negative means "no limit".
+	Limit int
+	// EncryptedOnly restricts to rooms with E2EE enabled.
 	EncryptedOnly bool
+	// Search is a case-insensitive substring match across id, name, topic,
+	// canonical_alias. Empty matches everything.
+	Search string
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -224,6 +229,30 @@ func (s *Store) Upsert(ctx context.Context, stats SyncStats, rooms []Room, membe
 		}
 	}
 
+	// Refresh denormalized rollups on every room we just touched. Cheap with
+	// the (room_id, origin_server_ts) index. Without this `rooms.message_count`
+	// and `rooms.last_event_ts` would stay stale at 0 / first-seen.
+	touched := map[string]struct{}{}
+	for _, r := range rooms {
+		touched[r.ID] = struct{}{}
+	}
+	for _, m := range messages {
+		touched[m.RoomID] = struct{}{}
+	}
+	for roomID := range touched {
+		if _, err := tx.ExecContext(ctx, `
+			update rooms set
+				message_count = (select count(*) from messages where room_id = ?),
+				last_event_ts = coalesce(
+					(select max(origin_server_ts) from messages where room_id = ?),
+					last_event_ts
+				)
+			where id = ?
+		`, roomID, roomID, roomID); err != nil {
+			return fmt.Errorf("refresh rollups for %s: %w", roomID, err)
+		}
+	}
+
 	now := stats.FinishedAt
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -301,21 +330,32 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 }
 
 func (s *Store) ListRooms(ctx context.Context, filter RoomFilter) ([]Room, error) {
-	if filter.Limit <= 0 {
-		filter.Limit = 50
-	}
 	query := `
 		select id, coalesce(canonical_alias,''), coalesce(name,''), coalesce(topic,''), coalesce(avatar_mxc,''),
 		       is_direct, is_encrypted, coalesce(encryption_algorithm,''), member_count,
 		       coalesce(joined_at,0), coalesce(last_event_ts,0), message_count, coalesce(prev_batch,'')
 		from rooms
+		where 1=1
 	`
 	args := []any{}
 	if filter.EncryptedOnly {
-		query += " where is_encrypted <> 0"
+		query += " and is_encrypted <> 0"
 	}
-	query += " order by last_event_ts desc nulls last limit ?"
-	args = append(args, filter.Limit)
+	if term := strings.TrimSpace(filter.Search); term != "" {
+		query += ` and (
+			lower(coalesce(name,''))            like lower(?) or
+			lower(coalesce(canonical_alias,'')) like lower(?) or
+			lower(coalesce(topic,''))           like lower(?) or
+			lower(id)                           like lower(?)
+		)`
+		like := "%" + term + "%"
+		args = append(args, like, like, like, like)
+	}
+	query += " order by last_event_ts desc nulls last, name asc"
+	if filter.Limit > 0 {
+		query += " limit ?"
+		args = append(args, filter.Limit)
+	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

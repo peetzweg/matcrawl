@@ -121,6 +121,19 @@ func (m *memberAccumulator) result() []store.RoomMember {
 	return out
 }
 
+// joinCount returns the number of currently-joined members in the accumulator.
+// Used to fill Room.MemberCount when the server's LazyLoadSummary doesn't
+// include JoinedMemberCount (frequent on non-lazy-load /sync responses).
+func (m *memberAccumulator) joinCount() int {
+	n := 0
+	for _, v := range m.members {
+		if v.Membership == "join" {
+			n++
+		}
+	}
+	return n
+}
+
 // eventToMessage converts a single Matrix event into a store.Message row.
 // Plaintext m.room.message events come back fully populated. Encrypted
 // (m.room.encrypted) events come back with WasEncrypted=true and
