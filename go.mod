@@ -3,11 +3,11 @@ module github.com/peetzweg/matcrawl
 go 1.26.3
 
 require (
-	github.com/openclaw/crawlkit v0.11.0
+	github.com/openclaw/crawlkit v0.12.2
 	go.mau.fi/util v0.9.9
 	golang.org/x/term v0.43.0
 	maunium.net/go/mautrix v0.28.0
-	modernc.org/sqlite v1.51.0
+	modernc.org/sqlite v1.52.0
 )
 
 require (
