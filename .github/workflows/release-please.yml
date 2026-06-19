@@ -25,7 +25,7 @@ jobs:
 
       # Everything below only runs on the merge of a Release PR — i.e. when
       # release-please actually cut a new version.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: ${{ steps.release.outputs.release_created }}
         with:
           fetch-depth: 0    # goreleaser wants the full git history
