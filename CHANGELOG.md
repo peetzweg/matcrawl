@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/peetzweg/matcrawl/compare/v0.2.0...v0.3.0) (2026-06-26)
+
+
+### Features
+
+* sync visibility + accurate room rollups + discoverability ([3583eea](https://github.com/peetzweg/matcrawl/commit/3583eea574bb920dadf3ff2d82e8ae05fb9865a5))
+
 ## [0.2.0](https://github.com/peetzweg/matcrawl/compare/v0.1.0...v0.2.0) (2026-05-30)
 
 
