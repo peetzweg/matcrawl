@@ -26,8 +26,8 @@ github.com/mattn/go-sqlite3 v1.14.44 h1:3VSe+xafpbzsLbdr2AWlAZk9yRHiBhTBakioXaCK
 github.com/mattn/go-sqlite3 v1.14.44/go.mod h1:pjEuOr8IwzLJP2MfGeTb0A35jauH+C2kbHKBr7yXKVQ=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
-github.com/openclaw/crawlkit v0.13.1 h1:an4RNC9IhaGtwGUGFJWVlIydmu5SmZEWRCzLOXWBbgA=
-github.com/openclaw/crawlkit v0.13.1/go.mod h1:zOJv5WPWO1AuuXO7zW8NRTxb/ZTkIQXYPrx3StmnMUI=
+github.com/openclaw/crawlkit v0.13.4 h1:6KZaIzs5BQxBjCeOwg1u2XPLNbsOkrRPQGPtTkxZaYE=
+github.com/openclaw/crawlkit v0.13.4/go.mod h1:u5oK8v0gtLzIXtj6gehF0JV2cGX1D/xiogZGCJwONGs=
 github.com/petermattis/goid v0.0.0-20260330135022-df67b199bc81 h1:WDsQxOJDy0N1VRAjXLpi8sCEZRSGarLWQevDxpTBRrM=
 github.com/petermattis/goid v0.0.0-20260330135022-df67b199bc81/go.mod h1:pxMtw7cyUw6B2bRH0ZBANSPg+AoSud1I1iyJHI69jH4=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
