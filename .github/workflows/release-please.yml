@@ -30,7 +30,7 @@ jobs:
         with:
           fetch-depth: 0    # goreleaser wants the full git history
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         if: ${{ steps.release.outputs.release_created }}
         with:
           go-version-file: go.mod
