@@ -506,7 +506,7 @@ func (s *Store) messages(ctx context.Context, filter MessageFilter, search bool)
 	prefix := ""
 	if search {
 		query = `
-			select m.room_id, m.event_id, m.sender, `+senderNameSQL+`,
+			select m.room_id, m.event_id, m.sender, ` + senderNameSQL + `,
 			       m.origin_server_ts, m.msgtype, coalesce(m.body,''), coalesce(m.formatted_body,''),
 			       m.was_encrypted, coalesce(m.decrypt_status,''), coalesce(m.decrypt_error,''),
 			       coalesce(m.attachments_json,''), coalesce(m.edits_json,''), coalesce(m.reactions_json,''),
@@ -520,7 +520,7 @@ func (s *Store) messages(ctx context.Context, filter MessageFilter, search bool)
 		prefix = "m."
 	} else {
 		query = `
-			select m.room_id, m.event_id, m.sender, `+senderNameSQL+`,
+			select m.room_id, m.event_id, m.sender, ` + senderNameSQL + `,
 			       m.origin_server_ts, m.msgtype, coalesce(m.body,''), coalesce(m.formatted_body,''),
 			       m.was_encrypted, coalesce(m.decrypt_status,''), coalesce(m.decrypt_error,''),
 			       coalesce(m.attachments_json,''), coalesce(m.edits_json,''), coalesce(m.reactions_json,''),
