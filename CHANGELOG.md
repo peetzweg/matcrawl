@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/peetzweg/matcrawl/compare/v0.2.0...v0.3.0) (2026-10-22)
+
+
+### Features
+
+* crawlkit 0.17 + control.Status envelope + trailing --json ([#53](https://github.com/peetzweg/matcrawl/issues/53)) ([aea8718](https://github.com/peetzweg/matcrawl/commit/aea8718091860af28f0a59242c50ee4e98e982a9))
+* sync visibility + accurate room rollups + discoverability ([3583eea](https://github.com/peetzweg/matcrawl/commit/3583eea574bb920dadf3ff2d82e8ae05fb9865a5))
+
 ## [0.2.0](https://github.com/peetzweg/matcrawl/compare/v0.1.0...v0.2.0) (2026-05-30)
 
 
