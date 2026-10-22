@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/peetzweg/matcrawl/compare/v0.3.0...v0.4.0) (2026-10-22)
+
+
+### Features
+
+* archive edits, reactions, deletions, spaces, upgrades and power levels ([#56](https://github.com/peetzweg/matcrawl/issues/56)) ([cff5160](https://github.com/peetzweg/matcrawl/commit/cff5160237950190529fcfa197d03db5e02cdd58))
+
+
+### Bug Fixes
+
+* keep room names across syncs and label every room ([#54](https://github.com/peetzweg/matcrawl/issues/54)) ([e0165ff](https://github.com/peetzweg/matcrawl/commit/e0165ff2790ecb39d0d4c1d5b099963c899b6e02))
+
 ## [0.3.0](https://github.com/peetzweg/matcrawl/compare/v0.2.0...v0.3.0) (2026-10-22)
 
 
