@@ -96,11 +96,33 @@ timestamp.
     matcrawl members --room '!abc:server.example'
     matcrawl messages --room '!abc:server.example' --after 2026-01-01
     matcrawl messages --media
-    matcrawl search "<query>"
+    matcrawl messages --space '!space:server.example' --sender @alice:server.example
+    matcrawl search "<query>" --limit 20
+    matcrawl spaces
 
-All commands accept `--json` (must come before the subcommand) for
+All commands accept `--json`, before or after the subcommand, for
 machine-readable output. `matcrawl metadata` returns the crawlkit
 control manifest for agent integrations.
+
+## What's archived
+
+- **Rooms**: name, alias, topic, avatar, encryption, DM flag (from
+  `m.direct`), room type and version, creator, power levels, upgrades
+  (predecessor/replacement room) and the spaces each room belongs to. Rooms
+  without a name get one from their members, as Element does
+  (`display_name`).
+- **Messages**: text, formatting, attachments, stickers, polls, threads and
+  replies, with the sender's display name and the room name. Edited messages
+  show their current text plus `original_body` and the full edit history.
+  Search matches the current text.
+- **Reactions**: aggregated per emoji with who reacted.
+- **Deletions**: deleted messages are flagged with who deleted them and why.
+  Content captured before the deletion is kept.
+
+`matcrawl sync` fills gaps when a busy room had more activity than one sync
+returns. `matcrawl sync --backfill` walks each room's history back to its
+creation. After an upgrade that captures new kinds of events, it re-walks
+each room once, and Ctrl-C resumes where it stopped.
 
 ## Backup (optional)
 

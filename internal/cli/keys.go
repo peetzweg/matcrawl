@@ -96,19 +96,18 @@ func (r *runtime) keysRetry(args []string) error {
 		}
 		result := keysRetryResult{Attempted: len(pending)}
 		var updates []store.Message
+		var decrypted store.Batch
 		for _, m := range pending {
 			res := matrix.DecryptStored(r.ctx, helper, m.RawJSON)
 			switch res.Status {
 			case "ok":
-				m.Body = res.Body
-				m.FormattedBody = res.FormattedBody
-				if res.MsgType != "" {
-					m.MsgType = res.MsgType
-				}
-				m.DecryptStatus = "ok"
-				m.DecryptError = ""
+				b := matrix.DecryptedBatch(m, res.Event)
+				decrypted.Messages = append(decrypted.Messages, b.Messages...)
+				decrypted.Edits = append(decrypted.Edits, b.Edits...)
+				decrypted.Reactions = append(decrypted.Reactions, b.Reactions...)
+				decrypted.Redactions = append(decrypted.Redactions, b.Redactions...)
+				decrypted.DropMessages = append(decrypted.DropMessages, b.DropMessages...)
 				result.Decrypted++
-				updates = append(updates, m)
 			case "missing_keys":
 				m.DecryptStatus = "missing_keys"
 				m.DecryptError = res.ErrorString
@@ -120,8 +119,9 @@ func (r *runtime) keysRetry(args []string) error {
 				updates = append(updates, m)
 			}
 		}
-		if len(updates) > 0 {
-			if err := st.Upsert(r.ctx, store.SyncStats{}, nil, nil, updates); err != nil {
+		decrypted.Messages = append(decrypted.Messages, updates...)
+		if len(decrypted.Messages)+len(decrypted.Edits)+len(decrypted.Reactions)+len(decrypted.DropMessages) > 0 {
+			if err := st.Apply(r.ctx, store.SyncStats{}, decrypted); err != nil {
 				return err
 			}
 		}

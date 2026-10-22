@@ -139,3 +139,29 @@ func TestMessagesResolveSenderAndRoomNames(t *testing.T) {
 		}
 	}
 }
+
+func TestSeedPrevBatchNeverMovesBackfillCursor(t *testing.T) {
+	st, ctx := openTestStore(t)
+	cursor := func() string {
+		rooms, _ := st.ListRooms(ctx, RoomFilter{})
+		return rooms[0].PrevBatch
+	}
+	// First sync seeds the cursor.
+	if err := st.Upsert(ctx, SyncStats{}, []Room{{ID: "!r:x", SeedPrevBatch: "t-now-1"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := cursor(); got != "t-now-1" {
+		t.Fatalf("seeded cursor = %q", got)
+	}
+	// Backfill advances it into the past.
+	if err := st.Upsert(ctx, SyncStats{}, []Room{{ID: "!r:x", PrevBatch: "t-2021"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A later sync offers a fresh token; the cursor must stay put.
+	if err := st.Upsert(ctx, SyncStats{}, []Room{{ID: "!r:x", SeedPrevBatch: "t-now-2"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := cursor(); got != "t-2021" {
+		t.Fatalf("sync moved the backfill cursor to %q", got)
+	}
+}

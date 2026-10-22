@@ -53,6 +53,18 @@ func TestPushPullRoundTrip(t *testing.T) {
 	if err := src.Upsert(ctx, store.SyncStats{FinishedAt: now}, rooms, members, messages); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	relations := store.Batch{
+		Edits: []store.Edit{{RoomID: "!room:example.org", EventID: "$edit", TargetEventID: "$evt-2024-01", Sender: "@a:example.org",
+			OriginServerTS: time.Date(2024, 1, 16, 0, 0, 0, 0, time.UTC), Body: "edited in january"}},
+		Reactions: []store.Reaction{{RoomID: "!room:example.org", EventID: "$react", TargetEventID: "$evt-2024-02", Sender: "@a:example.org",
+			Key: "👍", OriginServerTS: time.Date(2024, 2, 21, 0, 0, 0, 0, time.UTC)}},
+		Redactions: []store.Redaction{{RoomID: "!room:example.org", EventID: "$del", TargetEventID: "$evt-gone", Sender: "@a:example.org",
+			OriginServerTS: time.Date(2024, 2, 22, 0, 0, 0, 0, time.UTC)}},
+		SpaceChildren: []store.SpaceChild{{SpaceID: "!room:example.org", ChildID: "!child:example.org", Via: []string{"example.org"}}},
+	}
+	if err := src.Apply(ctx, store.SyncStats{FinishedAt: now}, relations); err != nil {
+		t.Fatalf("seed relations: %v", err)
+	}
 
 	repo := filepath.Join(tmp, "repo")
 	identity := filepath.Join(tmp, "age.key")
@@ -86,6 +98,10 @@ func TestPushPullRoundTrip(t *testing.T) {
 		filepath.Join(repo, "data", "members.jsonl.gz.age"),
 		filepath.Join(repo, "data", "messages", "2024", "01.jsonl.gz.age"),
 		filepath.Join(repo, "data", "messages", "2024", "02.jsonl.gz.age"),
+		filepath.Join(repo, "data", "edits.jsonl.gz.age"),
+		filepath.Join(repo, "data", "reactions.jsonl.gz.age"),
+		filepath.Join(repo, "data", "redactions.jsonl.gz.age"),
+		filepath.Join(repo, "data", "space_children.jsonl.gz.age"),
 	} {
 		if _, err := os.Stat(want); err != nil {
 			t.Errorf("missing artifact %s: %v", want, err)
@@ -118,11 +134,16 @@ func TestPushPullRoundTrip(t *testing.T) {
 		t.Errorf("dst status = %+v, want rooms=1 messages=2", st)
 	}
 
-	hits, err := dst.Search(ctx, store.MessageFilter{Query: "january"})
+	if st.Edits != 1 || st.Reactions != 1 || st.Redactions != 1 {
+		t.Errorf("dst relations = %+v, want one each", st)
+	}
+
+	// The restored index searches the edited text.
+	hits, err := dst.Search(ctx, store.MessageFilter{Query: "edited"})
 	if err != nil {
 		t.Fatalf("dst search: %v", err)
 	}
-	if len(hits) != 1 || hits[0].EventID != "$evt-2024-01" {
+	if len(hits) != 1 || hits[0].EventID != "$evt-2024-01" || hits[0].OriginalBody != "from january" {
 		t.Errorf("FTS search on restored store returned %+v", hits)
 	}
 }
