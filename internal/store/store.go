@@ -487,6 +487,16 @@ func (s *Store) Search(ctx context.Context, filter MessageFilter) ([]Message, er
 	return s.messages(ctx, filter, true)
 }
 
+// senderNameSQL resolves a message's sender display name at read time: the
+// name stored on the event (if any), else the sender's current name in that
+// room, else their name in any other room we share. Resolving on read keeps
+// renames current without rewriting history.
+const senderNameSQL = `coalesce(
+	nullif(m.sender_display_name,''),
+	(select nullif(rm.display_name,'') from room_members rm where rm.room_id = m.room_id and rm.user_id = m.sender),
+	(select rm.display_name from room_members rm where rm.user_id = m.sender and coalesce(rm.display_name,'') <> '' limit 1),
+	'')`
+
 func (s *Store) messages(ctx context.Context, filter MessageFilter, search bool) ([]Message, error) {
 	if filter.Limit <= 0 {
 		filter.Limit = 50
@@ -496,7 +506,7 @@ func (s *Store) messages(ctx context.Context, filter MessageFilter, search bool)
 	prefix := ""
 	if search {
 		query = `
-			select m.room_id, m.event_id, m.sender, coalesce(m.sender_display_name,''),
+			select m.room_id, m.event_id, m.sender, `+senderNameSQL+`,
 			       m.origin_server_ts, m.msgtype, coalesce(m.body,''), coalesce(m.formatted_body,''),
 			       m.was_encrypted, coalesce(m.decrypt_status,''), coalesce(m.decrypt_error,''),
 			       coalesce(m.attachments_json,''), coalesce(m.edits_json,''), coalesce(m.reactions_json,''),
@@ -510,14 +520,15 @@ func (s *Store) messages(ctx context.Context, filter MessageFilter, search bool)
 		prefix = "m."
 	} else {
 		query = `
-			select room_id, event_id, sender, coalesce(sender_display_name,''),
-			       origin_server_ts, msgtype, coalesce(body,''), coalesce(formatted_body,''),
-			       was_encrypted, coalesce(decrypt_status,''), coalesce(decrypt_error,''),
-			       coalesce(attachments_json,''), coalesce(edits_json,''), coalesce(reactions_json,''),
-			       coalesce(thread_id,''), coalesce(reply_to_event_id,''),
+			select m.room_id, m.event_id, m.sender, `+senderNameSQL+`,
+			       m.origin_server_ts, m.msgtype, coalesce(m.body,''), coalesce(m.formatted_body,''),
+			       m.was_encrypted, coalesce(m.decrypt_status,''), coalesce(m.decrypt_error,''),
+			       coalesce(m.attachments_json,''), coalesce(m.edits_json,''), coalesce(m.reactions_json,''),
+			       coalesce(m.thread_id,''), coalesce(m.reply_to_event_id,''),
 			       '' as snippet
-			from messages where 1=1
+			from messages m where 1=1
 		`
+		prefix = "m."
 	}
 	if filter.RoomID != "" {
 		query += " and " + prefix + "room_id = ?"

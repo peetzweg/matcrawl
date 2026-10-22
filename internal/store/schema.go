@@ -49,6 +49,8 @@ create table if not exists messages (
 	unique(room_id, event_id)
 );
 
+create index if not exists idx_room_members_user on room_members(user_id);
+
 create index if not exists idx_messages_room_ts on messages(room_id, origin_server_ts);
 create index if not exists idx_messages_ts on messages(origin_server_ts);
 create index if not exists idx_messages_sender on messages(sender);

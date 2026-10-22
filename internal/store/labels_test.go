@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestUpsertKeepsRoomStateMissingFromIncrementalSync(t *testing.T) {
 	st, ctx := openTestStore(t)
@@ -105,6 +108,34 @@ func TestSetDirectRooms(t *testing.T) {
 	for _, r := range rooms {
 		if r.IsDirect != (r.ID == "!b:x") {
 			t.Errorf("%s is_direct = %v", r.ID, r.IsDirect)
+		}
+	}
+}
+
+func TestMessagesResolveSenderAndRoomNames(t *testing.T) {
+	st, ctx := openTestStore(t)
+	rooms := []Room{{ID: "!a:x", Name: "Ops"}, {ID: "!b:x"}}
+	members := []RoomMember{
+		{RoomID: "!a:x", UserID: "@alice:x", DisplayName: "Alice (Ops)", Membership: "join"},
+		{RoomID: "!b:x", UserID: "@bob:x", DisplayName: "Bob", Membership: "join"},
+	}
+	ts := time.Unix(1_700_000_000, 0).UTC()
+	messages := []Message{
+		{RoomID: "!a:x", EventID: "$1", Sender: "@alice:x", OriginServerTS: ts, MsgType: "m.text", Body: "hi"},
+		{RoomID: "!a:x", EventID: "$2", Sender: "@bob:x", OriginServerTS: ts.Add(time.Second), MsgType: "m.text", Body: "yo"},
+		{RoomID: "!a:x", EventID: "$3", Sender: "@carol:x", OriginServerTS: ts.Add(2 * time.Second), MsgType: "m.text", Body: "?"},
+	}
+	if err := st.Upsert(ctx, SyncStats{}, rooms, members, messages); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Messages(ctx, MessageFilter{RoomID: "!a:x", Asc: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Alice (Ops)", "Bob", ""} // bob: from another room; carol: unknown
+	for i, m := range got {
+		if m.SenderDisplayName != want[i] || m.RoomName != "Ops" {
+			t.Errorf("%s: sender=%q room=%q", m.EventID, m.SenderDisplayName, m.RoomName)
 		}
 	}
 }
