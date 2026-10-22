@@ -36,11 +36,11 @@ type BackfillResult struct {
 // inner http client sleeps for the server-advertised duration before
 // retrying, so we don't need an extra retry loop here (see MATCRAWL.md §4.5).
 func BackfillRoom(ctx context.Context, client *mautrix.Client, st *store.Store, room store.Room, progress io.Writer) (BackfillResult, error) {
-	label := room.Name
+	label := room.DisplayName
 	if label == "" {
 		label = room.ID
 	}
-	res := BackfillResult{RoomID: room.ID, Name: room.Name}
+	res := BackfillResult{RoomID: room.ID, Name: room.DisplayName}
 	from := trimToken(room.PrevBatch)
 	if from == "" {
 		res.Done = true
@@ -109,13 +109,13 @@ func BackfillAll(ctx context.Context, client *mautrix.Client, st *store.Store, p
 		if err := ctx.Err(); err != nil {
 			return results, err
 		}
-		label := r.Name
+		label := r.DisplayName
 		if label == "" {
 			label = r.ID
 		}
 		logf(progress, "backfill: [%d/%d] %s\n", i+1, len(rooms), label)
 		if r.PrevBatch == "" {
-			results = append(results, BackfillResult{RoomID: r.ID, Name: r.Name, Done: true})
+			results = append(results, BackfillResult{RoomID: r.ID, Name: r.DisplayName, Done: true})
 			continue
 		}
 		res, err := BackfillRoom(ctx, client, st, r, progress)

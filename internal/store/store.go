@@ -48,6 +48,7 @@ type Room struct {
 	Name                string    `json:"name,omitempty"`
 	Topic               string    `json:"topic,omitempty"`
 	AvatarMXC           string    `json:"avatar_mxc,omitempty"`
+	DisplayName         string    `json:"display_name,omitempty"`
 	IsDirect            bool      `json:"is_direct,omitempty"`
 	IsEncrypted         bool      `json:"is_encrypted,omitempty"`
 	EncryptionAlgorithm string    `json:"encryption_algorithm,omitempty"`
@@ -69,6 +70,7 @@ type RoomMember struct {
 
 type Message struct {
 	RoomID            string    `json:"room_id"`
+	RoomName          string    `json:"room_name,omitempty"`
 	EventID           string    `json:"event_id"`
 	Sender            string    `json:"sender"`
 	SenderDisplayName string    `json:"sender_display_name,omitempty"`
@@ -153,19 +155,23 @@ func (s *Store) Upsert(ctx context.Context, stats SyncStats, rooms []Room, membe
 	}
 	defer rollback(tx)
 
+	// An incremental /sync (and every backfill page) only carries state that
+	// changed, so an empty field means "unknown", not "cleared": keep what we
+	// already have. is_direct is owned by SetDirectRooms (m.direct), and
+	// encryption can never be turned off in Matrix.
 	for _, r := range rooms {
 		if _, err := tx.ExecContext(ctx, `
 			insert into rooms(id,canonical_alias,name,topic,avatar_mxc,is_direct,is_encrypted,encryption_algorithm,member_count,joined_at,last_event_ts,message_count,prev_batch)
 			values(?,?,?,?,?,?,?,?,?,?,?,?,?)
 			on conflict(id) do update set
-				canonical_alias=excluded.canonical_alias,
-				name=excluded.name,
-				topic=excluded.topic,
-				avatar_mxc=excluded.avatar_mxc,
-				is_direct=excluded.is_direct,
-				is_encrypted=excluded.is_encrypted,
-				encryption_algorithm=excluded.encryption_algorithm,
-				member_count=excluded.member_count,
+				canonical_alias=coalesce(nullif(excluded.canonical_alias,''), rooms.canonical_alias),
+				name=coalesce(nullif(excluded.name,''), rooms.name),
+				topic=coalesce(nullif(excluded.topic,''), rooms.topic),
+				avatar_mxc=coalesce(nullif(excluded.avatar_mxc,''), rooms.avatar_mxc),
+				is_direct=rooms.is_direct,
+				is_encrypted=max(excluded.is_encrypted, rooms.is_encrypted),
+				encryption_algorithm=coalesce(nullif(excluded.encryption_algorithm,''), rooms.encryption_algorithm),
+				member_count=case when excluded.member_count > 0 then excluded.member_count else rooms.member_count end,
 				joined_at=case when excluded.joined_at > 0 then excluded.joined_at else rooms.joined_at end,
 				last_event_ts=case when excluded.last_event_ts > coalesce(rooms.last_event_ts,0) then excluded.last_event_ts else rooms.last_event_ts end,
 				message_count=excluded.message_count,
@@ -378,7 +384,17 @@ func (s *Store) ListRooms(ctx context.Context, filter RoomFilter) ([]Room, error
 		r.LastEventTS = fromUnix(lastEventTS)
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	labels, err := s.RoomLabels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].DisplayName = labels[out[i].ID]
+	}
+	return out, nil
 }
 
 // ListUndecrypted returns messages that arrived as m.room.encrypted but
@@ -422,7 +438,17 @@ func (s *Store) ListUndecrypted(ctx context.Context, limit int) ([]Message, erro
 		m.WasEncrypted = wasEnc != 0
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	labels, err := s.RoomLabels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].RoomName = labels[out[i].RoomID]
+	}
+	return out, nil
 }
 
 func (s *Store) ListMembers(ctx context.Context, roomID string) ([]RoomMember, error) {
@@ -545,7 +571,17 @@ func (s *Store) messages(ctx context.Context, filter MessageFilter, search bool)
 		m.WasEncrypted = wasEnc != 0
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	labels, err := s.RoomLabels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].RoomName = labels[out[i].RoomID]
+	}
+	return out, nil
 }
 
 // ftsIndexable reports whether a message's body should land in messages_fts.
