@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/peetzweg/matcrawl/internal/store"
 )
@@ -60,7 +61,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		_, _ = io.WriteString(stdout, resolveVersion()+"\n")
 		return nil
 	}
-	rest := global.Args()
+	rest, trailingJSON := stripTrailingJSON(global.Args())
 	if len(rest) == 0 || rest[0] == "help" || rest[0] == "--help" || rest[0] == "-h" {
 		printUsage(stdout)
 		return nil
@@ -73,7 +74,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		ctx:    ctx,
 		stdout: stdout,
 		stderr: stderr,
-		json:   *jsonOut,
+		json:   *jsonOut || trailingJSON,
 		dbPath: *dbPath,
 	}
 	return r.dispatch(rest)
@@ -130,8 +131,21 @@ func (r *runtime) runStatus(args []string) error {
 		if err != nil {
 			return err
 		}
-		return r.print(status)
+		return r.print(controlStatus(status, time.Now()))
 	})
+}
+
+// stripTrailingJSON accepts the family-wide `<tool> <cmd> ... --json` form in
+// addition to `<tool> --json <cmd>`; crawlctl and CrawlBar invoke both. A lone
+// `search --json` is left alone so "--json" can still be a search query.
+func stripTrailingJSON(args []string) ([]string, bool) {
+	if len(args) < 2 || args[len(args)-1] != "--json" {
+		return args, false
+	}
+	if args[0] == "search" && len(args) == 2 {
+		return args, false
+	}
+	return args[:len(args)-1], true
 }
 
 func (r *runtime) print(v any) error {
@@ -167,6 +181,8 @@ usage:
   matcrawl [--json] backup init|push|pull|status
   matcrawl [--json] metadata
   matcrawl version
+
+  --json may also be passed last, e.g. matcrawl status --json
 
 setup:
   Authenticate against your Matrix homeserver:
