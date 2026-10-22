@@ -13,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 type Store struct {
 	db   *sql.DB
@@ -36,6 +36,10 @@ type Status struct {
 	Messages        int       `json:"messages"`
 	DecryptFailures int       `json:"decrypt_failures"`
 	MediaMessages   int       `json:"media_messages"`
+	Edits           int       `json:"edits"`
+	Reactions       int       `json:"reactions"`
+	Redactions      int       `json:"redactions"`
+	Spaces          int       `json:"spaces"`
 	OldestEvent     time.Time `json:"oldest_event,omitzero"`
 	NewestEvent     time.Time `json:"newest_event,omitzero"`
 	LastSyncAt      time.Time `json:"last_sync_at,omitzero"`
@@ -57,6 +61,24 @@ type Room struct {
 	LastEventTS         time.Time `json:"last_event_ts,omitzero"`
 	MessageCount        int       `json:"message_count"`
 	PrevBatch           string    `json:"prev_batch,omitempty"`
+	// SeedPrevBatch is a backfill cursor offered by /sync: it starts a room's
+	// backfill but never moves an existing cursor, which only backfill
+	// advances. Not persisted on its own.
+	SeedPrevBatch     string    `json:"-"`
+	RoomType          string    `json:"room_type,omitempty"`
+	RoomVersion       string    `json:"room_version,omitempty"`
+	Creator           string    `json:"creator,omitempty"`
+	CreatedAt         time.Time `json:"created_at,omitzero"`
+	PredecessorRoomID string    `json:"predecessor_room_id,omitempty"`
+	ReplacementRoomID string    `json:"replacement_room_id,omitempty"`
+	PowerLevelsJSON   string    `json:"power_levels_json,omitempty"`
+	ParentSpaces      []RoomRef `json:"parent_spaces,omitempty"`
+}
+
+// RoomRef names a room by ID and its display name.
+type RoomRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
 }
 
 type RoomMember struct {
@@ -82,12 +104,17 @@ type Message struct {
 	DecryptStatus     string    `json:"decrypt_status,omitempty"`
 	DecryptError      string    `json:"decrypt_error,omitempty"`
 	AttachmentsJSON   string    `json:"attachments_json,omitempty"`
-	EditsJSON         string    `json:"edits_json,omitempty"`
-	ReactionsJSON     string    `json:"reactions_json,omitempty"`
 	ThreadID          string    `json:"thread_id,omitempty"`
 	ReplyToEventID    string    `json:"reply_to_event_id,omitempty"`
 	RawJSON           string    `json:"raw_json,omitempty"`
 	Snippet           string    `json:"snippet,omitempty"`
+
+	// Read-time view of the message's relations; never written back.
+	EditedAt     time.Time       `json:"edited_at,omitzero"`
+	OriginalBody string          `json:"original_body,omitempty"`
+	Edits        []EditRevision  `json:"edits,omitempty"`
+	Reactions    []ReactionCount `json:"reactions,omitempty"`
+	Redacted     *RedactionInfo  `json:"redacted,omitempty"`
 }
 
 type MessageFilter struct {
@@ -99,6 +126,8 @@ type MessageFilter struct {
 	Before   *time.Time
 	HasMedia bool
 	Asc      bool
+	// SpaceID restricts to rooms that space lists as children.
+	SpaceID string
 }
 
 type RoomFilter struct {
@@ -109,6 +138,10 @@ type RoomFilter struct {
 	// Search is a case-insensitive substring match across id, name, topic,
 	// canonical_alias. Empty matches everything.
 	Search string
+	// SpaceID restricts to rooms that space lists as children.
+	SpaceID string
+	// SpacesOnly restricts to rooms that are themselves spaces.
+	SpacesOnly bool
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -133,11 +166,31 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := addMissingColumns(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("pragma user_version = %d", schemaVersion)); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+func addMissingColumns(ctx context.Context, db *sql.DB) error {
+	for _, c := range addedColumns {
+		var n int
+		if err := db.QueryRowContext(ctx, `select count(*) from pragma_table_info(?) where name = ?`, c.table, c.column).Scan(&n); err != nil {
+			return fmt.Errorf("inspect %s.%s: %w", c.table, c.column, err)
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("alter table %s add column %s %s", c.table, c.column, c.decl)); err != nil {
+			return fmt.Errorf("add %s.%s: %w", c.table, c.column, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -149,6 +202,12 @@ func (s *Store) DB() *sql.DB  { return s.db }
 // message so re-decryption (e.g. after `matcrawl keys retry`) replaces the
 // indexed body in-place.
 func (s *Store) Upsert(ctx context.Context, stats SyncStats, rooms []Room, members []RoomMember, messages []Message) error {
+	return s.Apply(ctx, stats, Batch{Rooms: rooms, Members: members, Messages: messages})
+}
+
+// Apply writes everything in b in one transaction, so a pagination
+// checkpoint can never get ahead of the events it covers.
+func (s *Store) Apply(ctx context.Context, stats SyncStats, b Batch) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -159,10 +218,11 @@ func (s *Store) Upsert(ctx context.Context, stats SyncStats, rooms []Room, membe
 	// changed, so an empty field means "unknown", not "cleared": keep what we
 	// already have. is_direct is owned by SetDirectRooms (m.direct), and
 	// encryption can never be turned off in Matrix.
-	for _, r := range rooms {
+	for _, r := range b.Rooms {
 		if _, err := tx.ExecContext(ctx, `
-			insert into rooms(id,canonical_alias,name,topic,avatar_mxc,is_direct,is_encrypted,encryption_algorithm,member_count,joined_at,last_event_ts,message_count,prev_batch)
-			values(?,?,?,?,?,?,?,?,?,?,?,?,?)
+			insert into rooms(id,canonical_alias,name,topic,avatar_mxc,is_direct,is_encrypted,encryption_algorithm,member_count,joined_at,last_event_ts,message_count,prev_batch,
+			                  room_type,room_version,creator,created_at,predecessor_room_id,replacement_room_id,power_levels_json)
+			values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			on conflict(id) do update set
 				canonical_alias=coalesce(nullif(excluded.canonical_alias,''), rooms.canonical_alias),
 				name=coalesce(nullif(excluded.name,''), rooms.name),
@@ -175,13 +235,25 @@ func (s *Store) Upsert(ctx context.Context, stats SyncStats, rooms []Room, membe
 				joined_at=case when excluded.joined_at > 0 then excluded.joined_at else rooms.joined_at end,
 				last_event_ts=case when excluded.last_event_ts > coalesce(rooms.last_event_ts,0) then excluded.last_event_ts else rooms.last_event_ts end,
 				message_count=excluded.message_count,
-				prev_batch=case when excluded.prev_batch <> '' then excluded.prev_batch else rooms.prev_batch end
-		`, r.ID, r.CanonicalAlias, r.Name, r.Topic, r.AvatarMXC, boolInt(r.IsDirect), boolInt(r.IsEncrypted), r.EncryptionAlgorithm, r.MemberCount, unix(r.JoinedAt), unix(r.LastEventTS), r.MessageCount, r.PrevBatch); err != nil {
+				prev_batch=case
+					when ? <> '' then excluded.prev_batch
+					when coalesce(rooms.prev_batch,'') = '' then excluded.prev_batch
+					else rooms.prev_batch end,
+				room_type=coalesce(nullif(excluded.room_type,''), rooms.room_type),
+				room_version=coalesce(nullif(excluded.room_version,''), rooms.room_version),
+				creator=coalesce(nullif(excluded.creator,''), rooms.creator),
+				created_at=case when excluded.created_at > 0 then excluded.created_at else rooms.created_at end,
+				predecessor_room_id=coalesce(nullif(excluded.predecessor_room_id,''), rooms.predecessor_room_id),
+				replacement_room_id=coalesce(nullif(excluded.replacement_room_id,''), rooms.replacement_room_id),
+				power_levels_json=coalesce(nullif(excluded.power_levels_json,''), rooms.power_levels_json)
+		`, r.ID, r.CanonicalAlias, r.Name, r.Topic, r.AvatarMXC, boolInt(r.IsDirect), boolInt(r.IsEncrypted), r.EncryptionAlgorithm, r.MemberCount, unix(r.JoinedAt), unix(r.LastEventTS), r.MessageCount, firstNonEmpty(r.PrevBatch, r.SeedPrevBatch),
+			r.RoomType, r.RoomVersion, r.Creator, unix(r.CreatedAt), r.PredecessorRoomID, r.ReplacementRoomID, r.PowerLevelsJSON,
+			r.PrevBatch); err != nil {
 			return fmt.Errorf("upsert room %s: %w", r.ID, err)
 		}
 	}
 
-	for _, mem := range members {
+	for _, mem := range b.Members {
 		if _, err := tx.ExecContext(ctx, `
 			insert into room_members(room_id,user_id,display_name,avatar_mxc,membership,power_level)
 			values(?,?,?,?,?,?)
@@ -195,10 +267,16 @@ func (s *Store) Upsert(ctx context.Context, stats SyncStats, rooms []Room, membe
 		}
 	}
 
-	for _, m := range messages {
+	reindex := map[EventRef]struct{}{}
+	touched := map[string]struct{}{}
+	for _, r := range b.Rooms {
+		touched[r.ID] = struct{}{}
+	}
+
+	for _, m := range b.Messages {
 		if _, err := tx.ExecContext(ctx, `
-			insert into messages(room_id,event_id,sender,sender_display_name,origin_server_ts,msgtype,body,formatted_body,was_encrypted,decrypt_status,decrypt_error,attachments_json,edits_json,reactions_json,thread_id,reply_to_event_id,raw_json)
-			values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			insert into messages(room_id,event_id,sender,sender_display_name,origin_server_ts,msgtype,body,formatted_body,was_encrypted,decrypt_status,decrypt_error,attachments_json,thread_id,reply_to_event_id,raw_json)
+			values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			on conflict(room_id,event_id) do update set
 				sender=excluded.sender,
 				sender_display_name=excluded.sender_display_name,
@@ -210,41 +288,28 @@ func (s *Store) Upsert(ctx context.Context, stats SyncStats, rooms []Room, membe
 				decrypt_status=excluded.decrypt_status,
 				decrypt_error=excluded.decrypt_error,
 				attachments_json=excluded.attachments_json,
-				edits_json=excluded.edits_json,
-				reactions_json=excluded.reactions_json,
 				thread_id=excluded.thread_id,
 				reply_to_event_id=excluded.reply_to_event_id,
 				raw_json=excluded.raw_json
-		`, m.RoomID, m.EventID, m.Sender, m.SenderDisplayName, unix(m.OriginServerTS), m.MsgType, m.Body, m.FormattedBody, boolInt(m.WasEncrypted), m.DecryptStatus, m.DecryptError, m.AttachmentsJSON, m.EditsJSON, m.ReactionsJSON, m.ThreadID, m.ReplyToEventID, m.RawJSON); err != nil {
+		`, m.RoomID, m.EventID, m.Sender, m.SenderDisplayName, unix(m.OriginServerTS), m.MsgType, m.Body, m.FormattedBody, boolInt(m.WasEncrypted), m.DecryptStatus, m.DecryptError, m.AttachmentsJSON, m.ThreadID, m.ReplyToEventID, m.RawJSON); err != nil {
 			return fmt.Errorf("upsert message %s/%s: %w", m.RoomID, m.EventID, err)
 		}
+		reindex[EventRef{m.RoomID, m.EventID}] = struct{}{}
+		touched[m.RoomID] = struct{}{}
+	}
 
-		// FTS5 has no ON CONFLICT support, so rebuild the row by hand.
-		if _, err := tx.ExecContext(ctx,
-			`delete from messages_fts where rowid=(select rowid from messages where room_id=? and event_id=?)`,
-			m.RoomID, m.EventID); err != nil {
-			return fmt.Errorf("fts delete: %w", err)
-		}
-		if ftsIndexable(m) {
-			roomLabel := m.RoomID
-			if _, err := tx.ExecContext(ctx,
-				`insert into messages_fts(rowid,body,room,sender) values((select rowid from messages where room_id=? and event_id=?),?,?,?)`,
-				m.RoomID, m.EventID, strings.TrimSpace(m.Body), roomLabel, displayOrID(m.SenderDisplayName, m.Sender)); err != nil {
-				return fmt.Errorf("fts insert: %w", err)
-			}
+	if err := applyRelations(ctx, tx, b, reindex, touched); err != nil {
+		return err
+	}
+	for ref := range reindex {
+		if err := reindexFTS(ctx, tx, ref); err != nil {
+			return err
 		}
 	}
 
 	// Refresh denormalized rollups on every room we just touched. Cheap with
 	// the (room_id, origin_server_ts) index. Without this `rooms.message_count`
 	// and `rooms.last_event_ts` would stay stale at 0 / first-seen.
-	touched := map[string]struct{}{}
-	for _, r := range rooms {
-		touched[r.ID] = struct{}{}
-	}
-	for _, m := range messages {
-		touched[m.RoomID] = struct{}{}
-	}
 	for roomID := range touched {
 		if _, err := tx.ExecContext(ctx, `
 			update rooms set
@@ -268,6 +333,9 @@ func (s *Store) Upsert(ctx context.Context, stats SyncStats, rooms []Room, membe
 	}
 	if stats.NextBatch != "" {
 		updates["next_batch"] = stats.NextBatch
+	}
+	for key, value := range b.SyncState {
+		updates[key] = value
 	}
 	for key, value := range updates {
 		if _, err := tx.ExecContext(ctx, `
@@ -311,6 +379,10 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 		{&out.Messages, "select count(*) from messages"},
 		{&out.DecryptFailures, "select count(*) from messages where decrypt_status in ('missing_keys','failed')"},
 		{&out.MediaMessages, "select count(*) from messages where msgtype in ('m.image','m.video','m.audio','m.file')"},
+		{&out.Edits, "select count(*) from edits"},
+		{&out.Reactions, "select count(*) from reactions"},
+		{&out.Redactions, "select count(*) from redactions"},
+		{&out.Spaces, "select count(*) from rooms where room_type = 'm.space'"},
 	} {
 		if err := s.db.QueryRowContext(ctx, c.q).Scan(c.dst); err != nil {
 			return out, err
@@ -339,11 +411,20 @@ func (s *Store) ListRooms(ctx context.Context, filter RoomFilter) ([]Room, error
 	query := `
 		select id, coalesce(canonical_alias,''), coalesce(name,''), coalesce(topic,''), coalesce(avatar_mxc,''),
 		       is_direct, is_encrypted, coalesce(encryption_algorithm,''), member_count,
-		       coalesce(joined_at,0), coalesce(last_event_ts,0), message_count, coalesce(prev_batch,'')
+		       coalesce(joined_at,0), coalesce(last_event_ts,0), message_count, coalesce(prev_batch,''),
+		       coalesce(room_type,''), coalesce(room_version,''), coalesce(creator,''), coalesce(created_at,0),
+		       coalesce(predecessor_room_id,''), coalesce(replacement_room_id,''), coalesce(power_levels_json,'')
 		from rooms
 		where 1=1
 	`
 	args := []any{}
+	if filter.SpaceID != "" {
+		query += " and id in (select child_id from space_children where space_id = ?)"
+		args = append(args, filter.SpaceID)
+	}
+	if filter.SpacesOnly {
+		query += " and room_type = 'm.space'"
+	}
 	if filter.EncryptedOnly {
 		query += " and is_encrypted <> 0"
 	}
@@ -372,12 +453,15 @@ func (s *Store) ListRooms(ctx context.Context, filter RoomFilter) ([]Room, error
 	for rows.Next() {
 		var r Room
 		var isDirect, isEncrypted int
-		var joinedAt, lastEventTS int64
+		var joinedAt, lastEventTS, createdAt int64
 		if err := rows.Scan(&r.ID, &r.CanonicalAlias, &r.Name, &r.Topic, &r.AvatarMXC,
 			&isDirect, &isEncrypted, &r.EncryptionAlgorithm, &r.MemberCount,
-			&joinedAt, &lastEventTS, &r.MessageCount, &r.PrevBatch); err != nil {
+			&joinedAt, &lastEventTS, &r.MessageCount, &r.PrevBatch,
+			&r.RoomType, &r.RoomVersion, &r.Creator, &createdAt,
+			&r.PredecessorRoomID, &r.ReplacementRoomID, &r.PowerLevelsJSON); err != nil {
 			return nil, err
 		}
+		r.CreatedAt = fromUnix(createdAt)
 		r.IsDirect = isDirect != 0
 		r.IsEncrypted = isEncrypted != 0
 		r.JoinedAt = fromUnix(joinedAt)
@@ -391,10 +475,33 @@ func (s *Store) ListRooms(ctx context.Context, filter RoomFilter) ([]Room, error
 	if err != nil {
 		return nil, err
 	}
+	parents, err := s.parentSpaces(ctx, labels)
+	if err != nil {
+		return nil, err
+	}
 	for i := range out {
 		out[i].DisplayName = labels[out[i].ID]
+		out[i].ParentSpaces = parents[out[i].ID]
 	}
 	return out, nil
+}
+
+// parentSpaces maps each room to the spaces that list it as a child.
+func (s *Store) parentSpaces(ctx context.Context, labels map[string]string) (map[string][]RoomRef, error) {
+	rows, err := s.db.QueryContext(ctx, `select child_id, space_id from space_children order by space_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string][]RoomRef{}
+	for rows.Next() {
+		var child, space string
+		if err := rows.Scan(&child, &space); err != nil {
+			return nil, err
+		}
+		out[child] = append(out[child], RoomRef{ID: space, Name: labels[space]})
+	}
+	return out, rows.Err()
 }
 
 // ListUndecrypted returns messages that arrived as m.room.encrypted but
@@ -409,7 +516,7 @@ func (s *Store) ListUndecrypted(ctx context.Context, limit int) ([]Message, erro
 		select room_id, event_id, sender, coalesce(sender_display_name,''),
 		       origin_server_ts, msgtype, coalesce(body,''), coalesce(formatted_body,''),
 		       was_encrypted, coalesce(decrypt_status,''), coalesce(decrypt_error,''),
-		       coalesce(attachments_json,''), coalesce(edits_json,''), coalesce(reactions_json,''),
+		       coalesce(attachments_json,''),
 		       coalesce(thread_id,''), coalesce(reply_to_event_id,''), coalesce(raw_json,'')
 		from messages
 		where decrypt_status in ('missing_keys','failed') and coalesce(raw_json,'') <> ''
@@ -429,7 +536,7 @@ func (s *Store) ListUndecrypted(ctx context.Context, limit int) ([]Message, erro
 			&m.RoomID, &m.EventID, &m.Sender, &m.SenderDisplayName,
 			&ts, &m.MsgType, &m.Body, &m.FormattedBody,
 			&wasEnc, &m.DecryptStatus, &m.DecryptError,
-			&m.AttachmentsJSON, &m.EditsJSON, &m.ReactionsJSON,
+			&m.AttachmentsJSON,
 			&m.ThreadID, &m.ReplyToEventID, &m.RawJSON,
 		); err != nil {
 			return nil, err
@@ -451,15 +558,25 @@ func (s *Store) ListUndecrypted(ctx context.Context, limit int) ([]Message, erro
 	return out, nil
 }
 
+// powerLevelSQL reads a member's power level from the room's
+// m.room.power_levels content: their entry in users, else users_default.
+// Rooms with no recorded power levels fall back to the stored column.
+const powerLevelSQL = `cast(case when coalesce(r.power_levels_json,'') = '' then m.power_level else coalesce(
+	json_extract(r.power_levels_json, '$.users."' || m.user_id || '"'),
+	json_extract(r.power_levels_json, '$.users_default'),
+	0) end as integer)`
+
 func (s *Store) ListMembers(ctx context.Context, roomID string) ([]RoomMember, error) {
 	if strings.TrimSpace(roomID) == "" {
 		return nil, errors.New("room id is required")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		select room_id, user_id, coalesce(display_name,''), coalesce(avatar_mxc,''), membership, power_level
-		from room_members
-		where room_id = ?
-		order by power_level desc, user_id asc
+		select m.room_id, m.user_id, coalesce(m.display_name,''), coalesce(m.avatar_mxc,''), m.membership,
+		       `+powerLevelSQL+` as pl
+		from room_members m
+		left join rooms r on r.id = m.room_id
+		where m.room_id = ?
+		order by pl desc, m.user_id asc
 	`, roomID)
 	if err != nil {
 		return nil, err
@@ -509,7 +626,7 @@ func (s *Store) messages(ctx context.Context, filter MessageFilter, search bool)
 			select m.room_id, m.event_id, m.sender, ` + senderNameSQL + `,
 			       m.origin_server_ts, m.msgtype, coalesce(m.body,''), coalesce(m.formatted_body,''),
 			       m.was_encrypted, coalesce(m.decrypt_status,''), coalesce(m.decrypt_error,''),
-			       coalesce(m.attachments_json,''), coalesce(m.edits_json,''), coalesce(m.reactions_json,''),
+			       coalesce(m.attachments_json,''),
 			       coalesce(m.thread_id,''), coalesce(m.reply_to_event_id,''),
 			       snippet(messages_fts,0,'[',']','…',12) as snippet
 			from messages_fts f
@@ -523,7 +640,7 @@ func (s *Store) messages(ctx context.Context, filter MessageFilter, search bool)
 			select m.room_id, m.event_id, m.sender, ` + senderNameSQL + `,
 			       m.origin_server_ts, m.msgtype, coalesce(m.body,''), coalesce(m.formatted_body,''),
 			       m.was_encrypted, coalesce(m.decrypt_status,''), coalesce(m.decrypt_error,''),
-			       coalesce(m.attachments_json,''), coalesce(m.edits_json,''), coalesce(m.reactions_json,''),
+			       coalesce(m.attachments_json,''),
 			       coalesce(m.thread_id,''), coalesce(m.reply_to_event_id,''),
 			       '' as snippet
 			from messages m where 1=1
@@ -533,6 +650,10 @@ func (s *Store) messages(ctx context.Context, filter MessageFilter, search bool)
 	if filter.RoomID != "" {
 		query += " and " + prefix + "room_id = ?"
 		args = append(args, filter.RoomID)
+	}
+	if filter.SpaceID != "" {
+		query += " and " + prefix + "room_id in (select child_id from space_children where space_id = ?)"
+		args = append(args, filter.SpaceID)
 	}
 	if filter.Sender != "" {
 		query += " and " + prefix + "sender = ?"
@@ -573,7 +694,7 @@ func (s *Store) messages(ctx context.Context, filter MessageFilter, search bool)
 			&m.RoomID, &m.EventID, &m.Sender, &m.SenderDisplayName,
 			&ts, &m.MsgType, &m.Body, &m.FormattedBody,
 			&wasEnc, &m.DecryptStatus, &m.DecryptError,
-			&m.AttachmentsJSON, &m.EditsJSON, &m.ReactionsJSON,
+			&m.AttachmentsJSON,
 			&m.ThreadID, &m.ReplyToEventID, &m.Snippet,
 		); err != nil {
 			return nil, err
@@ -591,6 +712,9 @@ func (s *Store) messages(ctx context.Context, filter MessageFilter, search bool)
 	}
 	for i := range out {
 		out[i].RoomName = labels[out[i].RoomID]
+	}
+	if err := s.enrichMessages(ctx, out); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -634,6 +758,15 @@ func fromUnix(s int64) time.Time {
 		return time.Time{}
 	}
 	return time.Unix(s, 0).UTC()
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func boolInt(b bool) int {

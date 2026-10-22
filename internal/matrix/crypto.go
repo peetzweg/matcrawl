@@ -18,6 +18,9 @@ import (
 	"maunium.net/go/mautrix/crypto"
 	"maunium.net/go/mautrix/crypto/cryptohelper"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
+
+	"github.com/peetzweg/matcrawl/internal/store"
 )
 
 // pickleKeyBytes is the size of the random key used to encrypt the local
@@ -128,6 +131,8 @@ type DecryptResult struct {
 	MsgType       string
 	Status        string
 	ErrorString   string
+	// Event is the decrypted event when Status is "ok".
+	Event *event.Event
 }
 
 // DecryptStored attempts to decrypt a previously stored m.room.encrypted
@@ -153,8 +158,8 @@ func DecryptStored(ctx context.Context, helper *cryptohelper.CryptoHelper, raw s
 		return DecryptResult{Status: "failed", ErrorString: err.Error()}
 	}
 
-	res := DecryptResult{Status: "ok"}
-	if err := decrypted.Content.ParseRaw(decrypted.Type); err == nil {
+	res := DecryptResult{Status: "ok", Event: decrypted}
+	if err := parseContent(decrypted, decrypted.Type); err == nil {
 		if msg := decrypted.Content.AsMessage(); msg != nil {
 			res.MsgType = string(msg.MsgType)
 			res.Body = msg.Body
@@ -176,4 +181,28 @@ func helperMachine(helper *cryptohelper.CryptoHelper) *crypto.OlmMachine {
 		return nil
 	}
 	return helper.Machine()
+}
+
+// DecryptedBatch classifies a successfully decrypted event the same way sync
+// does, so encrypted edits and reactions land in their own tables. stored is
+// the encrypted placeholder row; its raw ciphertext is kept for re-decryption.
+// If the event turns out not to be a message, the placeholder is dropped.
+func DecryptedBatch(stored store.Message, decrypted *event.Event) store.Batch {
+	var b store.Batch
+	appendEvent(&b, id.RoomID(stored.RoomID), decrypted)
+	for i := range b.Messages {
+		b.Messages[i].WasEncrypted = true
+		b.Messages[i].DecryptStatus = "ok"
+		b.Messages[i].RawJSON = stored.RawJSON
+	}
+	for i := range b.Edits {
+		b.Edits[i].WasEncrypted = true
+	}
+	for i := range b.Reactions {
+		b.Reactions[i].WasEncrypted = true
+	}
+	if len(b.Messages) == 0 {
+		b.DropMessages = append(b.DropMessages, store.EventRef{RoomID: stored.RoomID, EventID: stored.EventID})
+	}
+	return b
 }

@@ -50,15 +50,17 @@ func (r *runtime) messageFilter(name string, args []string, requireQuery bool) (
 	before := fs.String("before", "", "")
 	fs.BoolVar(&filter.HasMedia, "media", false, "")
 	fs.BoolVar(&filter.Asc, "asc", false, "")
-	if err := fs.Parse(args); err != nil {
+	fs.StringVar(&filter.SpaceID, "space", "", "")
+	positional, err := parseInterspersed(fs, args)
+	if err != nil {
 		return filter, usageErr(err)
 	}
 	if requireQuery {
-		if fs.NArg() != 1 {
+		if len(positional) != 1 {
 			return filter, usageErr(errors.New("search takes exactly one query"))
 		}
-		filter.Query = fs.Arg(0)
-	} else if fs.NArg() != 0 {
+		filter.Query = positional[0]
+	} else if len(positional) != 0 {
 		return filter, usageErr(errors.New("messages takes flags only"))
 	}
 	if *after != "" {
@@ -87,4 +89,22 @@ func parseDate(value string) (time.Time, error) {
 		return t, nil
 	}
 	return time.Time{}, fmt.Errorf("invalid date %q (use RFC3339 or YYYY-MM-DD)", value)
+}
+
+// parseInterspersed lets flags come before or after positional arguments
+// (`search "deploy" --limit 5` as well as `search --limit 5 deploy`); the
+// stdlib flag package stops at the first positional.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		args = fs.Args()
+		if len(args) == 0 {
+			return positional, nil
+		}
+		positional = append(positional, args[0])
+		args = args[1:]
+	}
 }

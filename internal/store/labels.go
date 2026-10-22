@@ -161,3 +161,26 @@ func (s *Store) LeftRoomsMissingName(ctx context.Context, self string) ([]string
 	}
 	return out, rows.Err()
 }
+
+// SpaceChildren maps every space to its children, including children not
+// in the archive (rooms the user hasn't joined); those carry no name.
+func (s *Store) SpaceChildren(ctx context.Context) (map[string][]RoomRef, error) {
+	labels, err := s.RoomLabels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `select space_id, child_id from space_children order by space_id, coalesce(order_key,''), child_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string][]RoomRef{}
+	for rows.Next() {
+		var space, child string
+		if err := rows.Scan(&space, &child); err != nil {
+			return nil, err
+		}
+		out[space] = append(out[space], RoomRef{ID: child, Name: labels[child]})
+	}
+	return out, rows.Err()
+}
