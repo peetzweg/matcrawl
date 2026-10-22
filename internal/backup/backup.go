@@ -177,6 +177,25 @@ func writeSnapshot(ctx context.Context, cfg Config, data store.Snapshot, old Man
 			return Manifest{}, err
 		}
 	}
+	// Relation tables are small next to messages; one shard each. Written
+	// only when non-empty so archives without them keep identical manifests.
+	for _, t := range []struct {
+		table string
+		rows  any
+		n     int
+	}{
+		{"edits", data.Edits, len(data.Edits)},
+		{"reactions", data.Reactions, len(data.Reactions)},
+		{"redactions", data.Redactions, len(data.Redactions)},
+		{"space_children", data.SpaceChildren, len(data.SpaceChildren)},
+	} {
+		if t.n == 0 {
+			continue
+		}
+		if err := add(t.table, "data/"+t.table+".jsonl.gz.age", t.rows); err != nil {
+			return Manifest{}, err
+		}
+	}
 	sort.Slice(shards, func(i, j int) bool { return shards[i].Path < shards[j].Path })
 	manifest := Manifest{
 		Format:     formatVersion,
@@ -226,6 +245,22 @@ func readSnapshot(cfg Config, manifest Manifest) (store.Snapshot, error) {
 				return store.Snapshot{}, err
 			}
 			data.Messages = append(data.Messages, messages...)
+		case "edits":
+			if err := decodeJSONL(plaintext, &data.Edits); err != nil {
+				return store.Snapshot{}, err
+			}
+		case "reactions":
+			if err := decodeJSONL(plaintext, &data.Reactions); err != nil {
+				return store.Snapshot{}, err
+			}
+		case "redactions":
+			if err := decodeJSONL(plaintext, &data.Redactions); err != nil {
+				return store.Snapshot{}, err
+			}
+		case "space_children":
+			if err := decodeJSONL(plaintext, &data.SpaceChildren); err != nil {
+				return store.Snapshot{}, err
+			}
 		default:
 			return store.Snapshot{}, fmt.Errorf("unknown backup table %q", shard.Table)
 		}

@@ -57,9 +57,73 @@ create index if not exists idx_messages_sender on messages(sender);
 
 create virtual table if not exists messages_fts using fts5(body, room, sender);
 
+-- Relations are stored by their own event ID and point at their target, so
+-- they land correctly whichever order history arrives in (backfill walks
+-- backwards, so an edit or reaction is usually seen before its target).
+create table if not exists edits (
+	room_id text not null,
+	event_id text not null,
+	target_event_id text not null,
+	sender text not null,
+	origin_server_ts integer not null,
+	msgtype text,
+	body text,
+	formatted_body text,
+	was_encrypted integer not null default 0,
+	raw_json text,
+	primary key (room_id, event_id)
+);
+create index if not exists idx_edits_target on edits(room_id, target_event_id, origin_server_ts);
+
+create table if not exists reactions (
+	room_id text not null,
+	event_id text not null,
+	target_event_id text not null,
+	sender text not null,
+	key text not null,
+	origin_server_ts integer not null,
+	was_encrypted integer not null default 0,
+	primary key (room_id, event_id)
+);
+create index if not exists idx_reactions_target on reactions(room_id, target_event_id);
+
+create table if not exists redactions (
+	room_id text not null,
+	event_id text not null,
+	target_event_id text not null,
+	sender text not null,
+	origin_server_ts integer not null,
+	reason text,
+	primary key (room_id, event_id)
+);
+create index if not exists idx_redactions_target on redactions(room_id, target_event_id);
+
+create table if not exists space_children (
+	space_id text not null,
+	child_id text not null,
+	suggested integer not null default 0,
+	order_key text,
+	via_json text,
+	primary key (space_id, child_id)
+);
+create index if not exists idx_space_children_child on space_children(child_id);
+
 create table if not exists sync_state (
 	key text primary key,
 	value text not null,
 	updated_at integer not null
 );
 `
+
+// addedColumns are columns introduced after a table was first created.
+// `create table if not exists` won't add them to an existing archive, so
+// Open adds whichever are missing.
+var addedColumns = []struct{ table, column, decl string }{
+	{"rooms", "room_type", "text"},
+	{"rooms", "room_version", "text"},
+	{"rooms", "creator", "text"},
+	{"rooms", "created_at", "integer"},
+	{"rooms", "predecessor_room_id", "text"},
+	{"rooms", "replacement_room_id", "text"},
+	{"rooms", "power_levels_json", "text"},
+}

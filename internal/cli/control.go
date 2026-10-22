@@ -24,7 +24,7 @@ func controlManifest() control.Manifest {
 		DefaultCache:    filepath.Join(defaultBaseDir(), "cache"),
 		DefaultLogs:     filepath.Join(defaultBaseDir(), "logs"),
 	}
-	m.Capabilities = []string{"metadata", "doctor", "status", "sync", "search", "backup", "keys"}
+	m.Capabilities = []string{"metadata", "doctor", "status", "sync", "search", "spaces", "backup", "keys"}
 	m.Privacy = control.Privacy{
 		ContainsPrivateMessages: true,
 		ExportsSecrets:          false,
@@ -36,6 +36,7 @@ func controlManifest() control.Manifest {
 		"status":   {Title: "Status", Argv: []string{"matcrawl", "status", "--json"}, JSON: true},
 		"sync":     {Title: "Sync", Argv: []string{"matcrawl", "--json", "sync"}, JSON: true, Mutates: true},
 		"search":   {Title: "Search", Argv: []string{"matcrawl", "--json", "search"}, JSON: true},
+		"spaces":   {Title: "Spaces", Argv: []string{"matcrawl", "spaces", "--json"}, JSON: true},
 	}
 	return m
 }
@@ -60,6 +61,10 @@ func controlStatus(status store.Status, now time.Time) archiveControlStatus {
 		control.NewCount("messages", "Messages", int64(status.Messages)),
 		control.NewCount("decrypt_failures", "Undecrypted messages", int64(status.DecryptFailures)),
 		control.NewCount("media_messages", "Media messages", int64(status.MediaMessages)),
+		control.NewCount("edits", "Edits", int64(status.Edits)),
+		control.NewCount("reactions", "Reactions", int64(status.Reactions)),
+		control.NewCount("redactions", "Deletions", int64(status.Redactions)),
+		control.NewCount("spaces", "Spaces", int64(status.Spaces)),
 	}
 	out := control.NewStatus("matcrawl", fmt.Sprintf("%d messages across %d rooms", status.Messages, status.Rooms))
 	out.ConfigPath = filepath.Join(defaultBaseDir(), "backup.json")

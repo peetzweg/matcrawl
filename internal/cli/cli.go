@@ -96,6 +96,8 @@ func (r *runtime) dispatch(args []string) error {
 		return r.runSync(args[1:])
 	case "rooms":
 		return r.runRooms(args[1:])
+	case "spaces":
+		return r.runSpaces(args[1:])
 	case "members":
 		return r.runMembers(args[1:])
 	case "messages":
@@ -174,10 +176,11 @@ usage:
   matcrawl [--json] keys retry
   matcrawl [--json] sync [--backfill]
   matcrawl [--json] status
-  matcrawl [--json] rooms [--limit N] [--encrypted-only]
+  matcrawl [--json] rooms [--limit N] [--all] [--encrypted-only] [--search TEXT] [--space ID]
+  matcrawl [--json] spaces
   matcrawl [--json] members --room <room_id>
-  matcrawl [--json] messages [--room ID] [--sender ID] [--after DATE] [--before DATE] [--limit N] [--media]
-  matcrawl [--json] search "query" [--room ID] [--limit N]
+  matcrawl [--json] messages [--room ID] [--space ID] [--sender ID] [--after DATE] [--before DATE] [--limit N] [--media] [--asc]
+  matcrawl [--json] search "query" [--room ID] [--space ID] [--sender ID] [--limit N]
   matcrawl [--json] backup init|push|pull|status
   matcrawl [--json] metadata
   matcrawl version
@@ -191,7 +194,9 @@ setup:
 notes:
   matcrawl speaks the Matrix Client-Server API directly, decrypts E2EE rooms
   using your Megolm keys, and stores history in ~/.matcrawl/matcrawl.db with
-  FTS5. Backup writes age-encrypted shards to a git repo.
+  FTS5. Messages carry their current (edited) text with edit history,
+  reactions, and deletion markers; rooms carry spaces, upgrades and power
+  levels. Backup writes age-encrypted shards to a git repo.
 `)
 }
 

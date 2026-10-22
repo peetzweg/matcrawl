@@ -46,6 +46,9 @@ func (r *runtime) runSync(args []string) error {
 	}
 
 	return r.withStore(func(st *store.Store) error {
+		if err := matrix.MigrateStoredEvents(r.ctx, st, progress); err != nil {
+			return fmt.Errorf("migrate: %w", err)
+		}
 		stats, err := matrix.SyncOnce(r.ctx, client, st, progress)
 		if err != nil {
 			return fmt.Errorf("sync: %w", err)
