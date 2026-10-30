@@ -3,7 +3,7 @@ module github.com/peetzweg/matcrawl
 go 1.27.3
 
 require (
-	github.com/openclaw/crawlkit v0.17.2
+	github.com/openclaw/crawlkit v0.17.3
 	go.mau.fi/util v0.11.0
 	golang.org/x/term v0.47.0
 	maunium.net/go/mautrix v0.32.0
