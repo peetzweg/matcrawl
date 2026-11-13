@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/openclaw/crawlkit v0.17.2
 	go.mau.fi/util v0.11.0
-	golang.org/x/term v0.47.0
+	golang.org/x/term v0.48.0
 	maunium.net/go/mautrix v0.32.0
 	modernc.org/sqlite v1.61.0
 )
@@ -30,7 +30,7 @@ require (
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
 	golang.org/x/net v0.61.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	modernc.org/libc v1.79.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
