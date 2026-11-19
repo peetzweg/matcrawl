@@ -212,3 +212,76 @@ func TestHasAnyEvent(t *testing.T) {
 		t.Fatal("event matched in the wrong room")
 	}
 }
+
+// Sync's gap fill re-reads events it already archived; a re-fetched
+// ciphertext placeholder must not undo a decryption.
+func TestPlaceholderDoesNotOverwriteDecrypted(t *testing.T) {
+	st, ctx := openTestStore(t)
+	ts := time.Unix(1_700_000_000, 0).UTC()
+	enc := Message{RoomID: "!r:x", EventID: "$enc", Sender: "@a:x", OriginServerTS: ts, MsgType: "m.room.encrypted",
+		WasEncrypted: true, DecryptStatus: "missing_keys", RawJSON: `{"event_id":"$enc"}`}
+	if err := st.Upsert(ctx, SyncStats{}, []Room{{ID: "!r:x"}}, nil, []Message{enc}); err != nil {
+		t.Fatal(err)
+	}
+	dec := enc
+	dec.MsgType, dec.Body, dec.DecryptStatus = "m.text", "secret plans", "ok"
+	if err := st.Apply(ctx, SyncStats{}, Batch{Messages: []Message{dec}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Apply(ctx, SyncStats{}, Batch{Messages: []Message{enc}}); err != nil {
+		t.Fatal(err)
+	}
+	var body, status string
+	if err := st.db.QueryRowContext(ctx, `select body, decrypt_status from messages where event_id='$enc'`).Scan(&body, &status); err != nil {
+		t.Fatal(err)
+	}
+	if body != "secret plans" || status != "ok" {
+		t.Fatalf("after re-fetch: body %q status %q, want the decrypted row kept", body, status)
+	}
+	if s, _ := st.Status(ctx); s.DecryptFailures != 0 {
+		t.Fatalf("decrypt failures = %d, want 0", s.DecryptFailures)
+	}
+}
+
+// An encrypted event that decrypted to a reaction has no message row; a
+// re-fetched placeholder must not bring one back.
+func TestPlaceholderNotResurrectedAfterDecryptToReaction(t *testing.T) {
+	st, ctx := openTestStore(t)
+	ts := time.Unix(1_700_000_000, 0).UTC()
+	enc := Message{RoomID: "!r:x", EventID: "$enc", Sender: "@a:x", OriginServerTS: ts, MsgType: "m.room.encrypted", WasEncrypted: true, DecryptStatus: "missing_keys"}
+	if err := st.Upsert(ctx, SyncStats{}, []Room{{ID: "!r:x"}}, nil, []Message{enc}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Apply(ctx, SyncStats{}, Batch{
+		Reactions:    []Reaction{{RoomID: "!r:x", EventID: "$enc", TargetEventID: "$m", Sender: "@a:x", Key: "👍", OriginServerTS: ts, WasEncrypted: true}},
+		DropMessages: []EventRef{{RoomID: "!r:x", EventID: "$enc"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Apply(ctx, SyncStats{}, Batch{Messages: []Message{enc}}); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := st.Status(ctx); s.Messages != 0 || s.DecryptFailures != 0 {
+		t.Fatalf("status = %+v, want no message rows", s)
+	}
+}
+
+// keys retry writes through Apply but isn't a sync; it must not make a
+// stale archive look freshly synced.
+func TestKeepSyncTimeLeavesLastSyncAlone(t *testing.T) {
+	st, ctx := openTestStore(t)
+	synced := time.Date(2026, 10, 23, 16, 36, 55, 0, time.UTC)
+	if err := st.Apply(ctx, SyncStats{FinishedAt: synced}, Batch{Rooms: []Room{{ID: "!r:x"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Apply(ctx, SyncStats{KeepSyncTime: true}, Batch{Rooms: []Room{{ID: "!r:x"}}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetSyncState(ctx, "last_sync_at")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != synced.Format(time.RFC3339Nano) {
+		t.Fatalf("last_sync_at = %q, want %q", got, synced.Format(time.RFC3339Nano))
+	}
+}

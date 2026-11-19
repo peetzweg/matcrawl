@@ -81,6 +81,7 @@ brews:
       assert_match version.to_s, shell_output("#{bin}/matcrawl version")
     caveats: |
       Run `matcrawl login` to authenticate against your Matrix homeserver,
-      then `matcrawl keys import` with an Element room-keys export
-      (Element → Settings → Security & Privacy → Export E2E room keys) to
-      decrypt E2EE rooms.
+      then `matcrawl sync --backfill`. To decrypt E2EE rooms, run
+      `matcrawl keys backup-pull` (asks for your Element recovery key) or
+      `matcrawl keys import` with an Element room-keys export, then
+      `matcrawl keys retry`.

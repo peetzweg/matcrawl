@@ -309,6 +309,13 @@ func appendEvent(b *store.Batch, roomID id.RoomID, evt *event.Event) {
 	if evt.StateKey != nil {
 		return
 	}
+	// /sync omits room_id from timeline events (the room is implied by where
+	// they sit in the response); /messages includes it. Fill it in so the
+	// stored raw JSON is complete: decrypting it later looks up the Megolm
+	// session by room.
+	if evt.RoomID == "" {
+		evt.RoomID = roomID
+	}
 	if rb := evt.Unsigned.RedactedBecause; rb != nil {
 		// The server already stripped this event; remember who deleted it.
 		b.Redactions = append(b.Redactions, redactionFrom(roomID, rb, evt.ID))

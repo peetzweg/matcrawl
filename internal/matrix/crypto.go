@@ -11,14 +11,15 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/rs/zerolog"
 	"go.mau.fi/util/dbutil"
 	_ "modernc.org/sqlite"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/crypto"
-	"maunium.net/go/mautrix/crypto/cryptohelper"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
+	"maunium.net/go/mautrix/sqlstatestore"
 
 	"github.com/peetzweg/matcrawl/internal/store"
 )
@@ -68,54 +69,88 @@ func EnsurePickleKey(path string) ([]byte, error) {
 	return key, nil
 }
 
-// OpenCrypto wires up a cryptohelper backed by a modernc.org/sqlite database
-// (pure-Go, no libsqlite or CGO). The cryptohelper bundles a SQLStateStore
-// and SQLCryptoStore; Init upgrades both schemas and loads the Olm account.
+// OpenMachine opens the local crypto store and loads its Olm account without
+// publishing any device keys.
 //
-// The returned helper holds the database open until Close is called.
-func OpenCrypto(ctx context.Context, client *mautrix.Client, paths CryptoPaths) (*cryptohelper.CryptoHelper, error) {
+// matcrawl reuses the device ID of the Element session it was logged in with,
+// and that device's identity keys already live on the server under Element's
+// account. cryptohelper.Init would try to publish matcrawl's own account under
+// the same device ID and refuses ("olm account is not marked as shared, but
+// there are keys on the server"), which is correct, since overwriting them
+// would break Element. Importing Megolm sessions and decrypting stored events
+// need neither a published device nor a sync loop, so this does what Init does
+// up to loading the account and stops there.
+//
+// The returned close function releases the crypto database.
+func OpenMachine(ctx context.Context, client *mautrix.Client, paths CryptoPaths) (*crypto.OlmMachine, func(), error) {
+	if client.UserID == "" || client.DeviceID == "" {
+		return nil, nil, errors.New("the client must be logged in")
+	}
 	pickleKey, err := EnsurePickleKey(paths.PickleKey)
 	if err != nil {
-		return nil, fmt.Errorf("pickle key: %w", err)
+		return nil, nil, fmt.Errorf("pickle key: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(paths.CryptoDB), 0o700); err != nil {
-		return nil, fmt.Errorf("mkdir crypto db dir: %w", err)
+		return nil, nil, fmt.Errorf("mkdir crypto db dir: %w", err)
 	}
 	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", paths.CryptoDB)
 	rawDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open crypto db: %w", err)
+		return nil, nil, fmt.Errorf("open crypto db: %w", err)
 	}
 	// Single connection is enough for the crawl workload and avoids
 	// SQLite-level locking surprises across goroutines.
 	rawDB.SetMaxOpenConns(1)
+	closeFn := func() { _ = rawDB.Close() }
 	if err := rawDB.PingContext(ctx); err != nil {
-		_ = rawDB.Close()
-		return nil, fmt.Errorf("ping crypto db: %w", err)
+		closeFn()
+		return nil, nil, fmt.Errorf("ping crypto db: %w", err)
 	}
 	db, err := dbutil.NewWithDB(rawDB, "sqlite")
 	if err != nil {
-		_ = rawDB.Close()
-		return nil, fmt.Errorf("wrap crypto db: %w", err)
+		closeFn()
+		return nil, nil, fmt.Errorf("wrap crypto db: %w", err)
 	}
-	helper, err := cryptohelper.NewCryptoHelper(client, pickleKey, db)
+
+	log := zerolog.Nop()
+	stateStore := sqlstatestore.NewSQLStateStore(db, dbutil.ZeroLogger(log), false)
+	if err := stateStore.Upgrade(ctx); err != nil {
+		closeFn()
+		return nil, nil, fmt.Errorf("upgrade state store: %w", err)
+	}
+	cryptoStore := crypto.NewSQLCryptoStore(db, dbutil.ZeroLogger(log), "", client.DeviceID, pickleKey)
+	if err := cryptoStore.DB.Upgrade(ctx); err != nil {
+		closeFn()
+		return nil, nil, fmt.Errorf("upgrade crypto store: %w", err)
+	}
+	stored, err := cryptoStore.FindDeviceID(ctx)
 	if err != nil {
-		_ = rawDB.Close()
-		return nil, fmt.Errorf("new crypto helper: %w", err)
+		closeFn()
+		return nil, nil, fmt.Errorf("find stored device ID: %w", err)
 	}
-	if err := helper.Init(ctx); err != nil {
-		_ = rawDB.Close()
-		return nil, fmt.Errorf("init crypto helper: %w", err)
+	if stored != "" && stored != client.DeviceID {
+		closeFn()
+		return nil, nil, fmt.Errorf("crypto store belongs to device %s but the session is device %s", stored, client.DeviceID)
 	}
-	return helper, nil
+
+	machine := crypto.NewOlmMachine(client, &log, cryptoStore, stateStore)
+	// Decrypting archived history needs neither sender device lookups (a
+	// /keys/query per unknown device) nor ratchet bookkeeping (rewriting the
+	// session after each message). The duplicate-index check still runs.
+	machine.DisableDecryptKeyFetching = true
+	machine.DisableRatchetTracking = true
+	if err := machine.Load(ctx); err != nil {
+		closeFn()
+		return nil, nil, fmt.Errorf("load olm account: %w", err)
+	}
+	return machine, closeFn, nil
 }
 
 // ImportKeyExport reads an Element room-keys .txt export from disk and feeds
 // its Megolm sessions into the OlmMachine. Returns (imported, total) counts.
-func ImportKeyExport(ctx context.Context, helper *cryptohelper.CryptoHelper, path, passphrase string) (int, int, error) {
-	machine := helperMachine(helper)
+func ImportKeyExport(ctx context.Context, machine *crypto.OlmMachine, path, passphrase string) (int, int, error) {
 	if machine == nil {
-		return 0, 0, errors.New("crypto helper has no OlmMachine — was Init called?")
+		return 0, 0, errors.New("no OlmMachine")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -137,9 +172,10 @@ type DecryptResult struct {
 
 // DecryptStored attempts to decrypt a previously stored m.room.encrypted
 // event by re-parsing its raw JSON and running it through the OlmMachine.
+// roomID is the room the row belongs to; it fills in for events stored from
+// /sync before room_id was added to their raw JSON.
 // Returns a result that the caller can fold back into the store row.
-func DecryptStored(ctx context.Context, helper *cryptohelper.CryptoHelper, raw string) DecryptResult {
-	machine := helperMachine(helper)
+func DecryptStored(ctx context.Context, machine *crypto.OlmMachine, roomID id.RoomID, raw string) DecryptResult {
 	if machine == nil {
 		return DecryptResult{Status: "failed", ErrorString: "no OlmMachine"}
 	}
@@ -148,6 +184,12 @@ func DecryptStored(ctx context.Context, helper *cryptohelper.CryptoHelper, raw s
 		return DecryptResult{Status: "failed", ErrorString: "raw_json unparseable: " + err.Error()}
 	}
 	evt.Type = event.EventEncrypted
+	if evt.RoomID == "" {
+		evt.RoomID = roomID
+	}
+	if err := parseContent(&evt, event.EventEncrypted); err != nil {
+		return DecryptResult{Status: "failed", ErrorString: "encrypted content unparseable: " + err.Error()}
+	}
 	decrypted, err := machine.DecryptMegolmEvent(ctx, &evt)
 	if err != nil {
 		// Surface "missing_keys" specifically when the OlmMachine can't find a session;
@@ -170,17 +212,6 @@ func DecryptStored(ctx context.Context, helper *cryptohelper.CryptoHelper, raw s
 		res.MsgType = string(decrypted.Type.Type)
 	}
 	return res
-}
-
-// helperMachine returns the OlmMachine that the cryptohelper manages. It's a
-// public field on cryptohelper.CryptoHelper, but we route through this
-// indirection so the rest of matcrawl doesn't take a hard dependency on the
-// helper's internals.
-func helperMachine(helper *cryptohelper.CryptoHelper) *crypto.OlmMachine {
-	if helper == nil {
-		return nil
-	}
-	return helper.Machine()
 }
 
 // DecryptedBatch classifies a successfully decrypted event the same way sync

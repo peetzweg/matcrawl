@@ -90,7 +90,7 @@ func controlStatus(status store.Status, now time.Time) archiveControlStatus {
 		}
 	}
 	if status.DecryptFailures > 0 {
-		out.Warnings = append(out.Warnings, fmt.Sprintf("%d messages could not be decrypted; run `matcrawl keys backup-pull` or `matcrawl keys import`", status.DecryptFailures))
+		out.Warnings = append(out.Warnings, fmt.Sprintf("%d messages could not be decrypted; run `matcrawl keys backup-pull` (or `matcrawl keys import <file>`), then `matcrawl keys retry`", status.DecryptFailures))
 	}
 
 	result := archiveControlStatus{Status: out, NextBatch: status.NextBatch}

@@ -27,6 +27,9 @@ type SyncStats struct {
 	NextBatch  string    `json:"next_batch,omitempty"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at"`
+	// KeepSyncTime leaves last_sync_at alone, for writes that aren't a sync
+	// (keys retry), so status freshness keeps reflecting the last real sync.
+	KeepSyncTime bool `json:"-"`
 }
 
 type Status struct {
@@ -274,6 +277,23 @@ func (s *Store) Apply(ctx context.Context, stats SyncStats, b Batch) error {
 	}
 
 	for _, m := range b.Messages {
+		if isPlaceholder(m.DecryptStatus) {
+			// An encrypted event fetched again (a gap fill re-reads its
+			// boundary page; a history re-walk re-reads everything) arrives
+			// as a placeholder. If it already decrypted to an edit, reaction
+			// or deletion, its message row was dropped on purpose.
+			var classified bool
+			if err := tx.QueryRowContext(ctx, `
+				select exists(select 1 from edits where room_id=? and event_id=?)
+				    or exists(select 1 from reactions where room_id=? and event_id=?)
+				    or exists(select 1 from redactions where room_id=? and event_id=?)
+			`, m.RoomID, m.EventID, m.RoomID, m.EventID, m.RoomID, m.EventID).Scan(&classified); err != nil {
+				return fmt.Errorf("check decrypted %s/%s: %w", m.RoomID, m.EventID, err)
+			}
+			if classified {
+				continue
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `
 			insert into messages(room_id,event_id,sender,sender_display_name,origin_server_ts,msgtype,body,formatted_body,was_encrypted,decrypt_status,decrypt_error,attachments_json,thread_id,reply_to_event_id,raw_json)
 			values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -291,6 +311,8 @@ func (s *Store) Apply(ctx context.Context, stats SyncStats, b Batch) error {
 				thread_id=excluded.thread_id,
 				reply_to_event_id=excluded.reply_to_event_id,
 				raw_json=excluded.raw_json
+			-- Never let a ciphertext placeholder overwrite a decrypted row.
+			where not (messages.decrypt_status = 'ok' and excluded.decrypt_status in ('missing_keys','failed'))
 		`, m.RoomID, m.EventID, m.Sender, m.SenderDisplayName, unix(m.OriginServerTS), m.MsgType, m.Body, m.FormattedBody, boolInt(m.WasEncrypted), m.DecryptStatus, m.DecryptError, m.AttachmentsJSON, m.ThreadID, m.ReplyToEventID, m.RawJSON); err != nil {
 			return fmt.Errorf("upsert message %s/%s: %w", m.RoomID, m.EventID, err)
 		}
@@ -328,8 +350,9 @@ func (s *Store) Apply(ctx context.Context, stats SyncStats, b Batch) error {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	updates := map[string]string{
-		"last_sync_at": now.Format(time.RFC3339Nano),
+	updates := map[string]string{}
+	if !stats.KeepSyncTime {
+		updates["last_sync_at"] = now.Format(time.RFC3339Nano)
 	}
 	if stats.NextBatch != "" {
 		updates["next_batch"] = stats.NextBatch
@@ -504,58 +527,71 @@ func (s *Store) parentSpaces(ctx context.Context, labels map[string]string) (map
 	return out, rows.Err()
 }
 
+// isPlaceholder reports whether a message row stands in for ciphertext that
+// hasn't been decrypted.
+func isPlaceholder(decryptStatus string) bool {
+	return decryptStatus == "missing_keys" || decryptStatus == "failed"
+}
+
 // ListUndecrypted returns messages that arrived as m.room.encrypted but
 // haven't been decrypted yet (decrypt_status = 'missing_keys' or 'failed').
 // Selects raw_json so callers can re-run them through OlmMachine after a
 // fresh key import.
-func (s *Store) ListUndecrypted(ctx context.Context, limit int) ([]Message, error) {
+//
+// Results page by rowid: pass 0 first, then the returned cursor, until no
+// rows come back. Paging by cursor rather than re-reading from the start
+// matters because rows that still lack keys stay in the result set and would
+// otherwise hide everything after them.
+func (s *Store) ListUndecrypted(ctx context.Context, afterRowID int64, limit int) ([]Message, int64, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		select room_id, event_id, sender, coalesce(sender_display_name,''),
+		select rowid, room_id, event_id, sender, coalesce(sender_display_name,''),
 		       origin_server_ts, msgtype, coalesce(body,''), coalesce(formatted_body,''),
 		       was_encrypted, coalesce(decrypt_status,''), coalesce(decrypt_error,''),
 		       coalesce(attachments_json,''),
 		       coalesce(thread_id,''), coalesce(reply_to_event_id,''), coalesce(raw_json,'')
 		from messages
 		where decrypt_status in ('missing_keys','failed') and coalesce(raw_json,'') <> ''
-		order by origin_server_ts asc
+		  and rowid > ?
+		order by rowid asc
 		limit ?
-	`, limit)
+	`, afterRowID, limit)
 	if err != nil {
-		return nil, err
+		return nil, afterRowID, err
 	}
 	defer func() { _ = rows.Close() }()
 	var out []Message
+	cursor := afterRowID
 	for rows.Next() {
 		var m Message
 		var ts int64
 		var wasEnc int
 		if err := rows.Scan(
-			&m.RoomID, &m.EventID, &m.Sender, &m.SenderDisplayName,
+			&cursor, &m.RoomID, &m.EventID, &m.Sender, &m.SenderDisplayName,
 			&ts, &m.MsgType, &m.Body, &m.FormattedBody,
 			&wasEnc, &m.DecryptStatus, &m.DecryptError,
 			&m.AttachmentsJSON,
 			&m.ThreadID, &m.ReplyToEventID, &m.RawJSON,
 		); err != nil {
-			return nil, err
+			return nil, afterRowID, err
 		}
 		m.OriginServerTS = fromUnix(ts)
 		m.WasEncrypted = wasEnc != 0
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, afterRowID, err
 	}
 	labels, err := s.RoomLabels(ctx)
 	if err != nil {
-		return nil, err
+		return nil, afterRowID, err
 	}
 	for i := range out {
 		out[i].RoomName = labels[out[i].RoomID]
 	}
-	return out, nil
+	return out, cursor, nil
 }
 
 // powerLevelSQL reads a member's power level from the room's

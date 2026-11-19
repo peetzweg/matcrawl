@@ -7,7 +7,8 @@ import (
 	"io"
 	"strings"
 
-	"maunium.net/go/mautrix/crypto/cryptohelper"
+	"maunium.net/go/mautrix/crypto"
+	"maunium.net/go/mautrix/id"
 
 	"github.com/peetzweg/matcrawl/internal/matrix"
 	"github.com/peetzweg/matcrawl/internal/store"
@@ -54,14 +55,20 @@ func (r *runtime) keysImport(args []string) error {
 		}
 		passphrase = v
 	}
+	if passphrase == "" {
+		// A non-interactive stdin (a pipe, or a shell that doesn't forward
+		// the terminal) reads as empty. Decrypting with "" fails as a hash
+		// mismatch, which looks like a wrong passphrase, so say so up front.
+		return errors.New("no passphrase entered — run `matcrawl keys import` in an interactive terminal, or pipe the passphrase on stdin")
+	}
 
-	helper, closeFn, err := r.openCrypto()
+	machine, closeFn, err := r.openCrypto()
 	if err != nil {
 		return err
 	}
 	defer closeFn()
 
-	imported, total, err := matrix.ImportKeyExport(r.ctx, helper, path, passphrase)
+	imported, total, err := matrix.ImportKeyExport(r.ctx, machine, path, passphrase)
 	if err != nil {
 		return fmt.Errorf("import keys: %w", err)
 	}
@@ -75,58 +82,85 @@ type keysRetryResult struct {
 	Failed       int `json:"failed"`
 }
 
+// retryPageSize is how many stored ciphertext events keys retry decrypts and
+// writes per transaction.
+const retryPageSize = 5000
+
 func (r *runtime) keysRetry(args []string) error {
 	fs := flag.NewFlagSet("matcrawl keys retry", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	limit := fs.Int("limit", 5000, "")
+	limit := fs.Int("limit", 0, "")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
 
-	helper, closeFn, err := r.openCrypto()
+	machine, closeFn, err := r.openCrypto()
 	if err != nil {
 		return err
 	}
 	defer closeFn()
 
 	return r.withStore(func(st *store.Store) error {
-		pending, err := st.ListUndecrypted(r.ctx, *limit)
-		if err != nil {
-			return err
-		}
-		result := keysRetryResult{Attempted: len(pending)}
-		var updates []store.Message
-		var decrypted store.Batch
-		for _, m := range pending {
-			res := matrix.DecryptStored(r.ctx, helper, m.RawJSON)
-			switch res.Status {
-			case "ok":
-				b := matrix.DecryptedBatch(m, res.Event)
-				decrypted.Messages = append(decrypted.Messages, b.Messages...)
-				decrypted.Edits = append(decrypted.Edits, b.Edits...)
-				decrypted.Reactions = append(decrypted.Reactions, b.Reactions...)
-				decrypted.Redactions = append(decrypted.Redactions, b.Redactions...)
-				decrypted.DropMessages = append(decrypted.DropMessages, b.DropMessages...)
-				result.Decrypted++
-			case "missing_keys":
-				m.DecryptStatus = "missing_keys"
-				m.DecryptError = res.ErrorString
-				result.StillMissing++
-			default:
-				m.DecryptStatus = "failed"
-				m.DecryptError = res.ErrorString
-				result.Failed++
-				updates = append(updates, m)
+		var result keysRetryResult
+		var cursor int64
+		for *limit <= 0 || result.Attempted < *limit {
+			pageSize := retryPageSize
+			if *limit > 0 {
+				pageSize = min(pageSize, *limit-result.Attempted)
 			}
-		}
-		decrypted.Messages = append(decrypted.Messages, updates...)
-		if len(decrypted.Messages)+len(decrypted.Edits)+len(decrypted.Reactions)+len(decrypted.DropMessages) > 0 {
-			if err := st.Apply(r.ctx, store.SyncStats{}, decrypted); err != nil {
+			pending, next, err := st.ListUndecrypted(r.ctx, cursor, pageSize)
+			if err != nil {
 				return err
 			}
+			if len(pending) == 0 {
+				break
+			}
+			cursor = next
+			result.Attempted += len(pending)
+			if err := retryPage(r, st, machine, pending, &result); err != nil {
+				return err
+			}
+			fmt.Fprintf(r.stderr, "keys retry: %d attempted, %d decrypted, %d still missing, %d failed\n",
+				result.Attempted, result.Decrypted, result.StillMissing, result.Failed)
 		}
 		return r.print(result)
 	})
+}
+
+// retryPage decrypts one page of stored ciphertext and writes the outcome:
+// decrypted events are reclassified, and rows whose status changed (say from
+// failed to missing_keys) are updated so status reports stay accurate.
+func retryPage(r *runtime, st *store.Store, machine *crypto.OlmMachine, pending []store.Message, result *keysRetryResult) error {
+	var decrypted store.Batch
+	for _, m := range pending {
+		res := matrix.DecryptStored(r.ctx, machine, id.RoomID(m.RoomID), m.RawJSON)
+		switch res.Status {
+		case "ok":
+			b := matrix.DecryptedBatch(m, res.Event)
+			decrypted.Messages = append(decrypted.Messages, b.Messages...)
+			decrypted.Edits = append(decrypted.Edits, b.Edits...)
+			decrypted.Reactions = append(decrypted.Reactions, b.Reactions...)
+			decrypted.Redactions = append(decrypted.Redactions, b.Redactions...)
+			decrypted.DropMessages = append(decrypted.DropMessages, b.DropMessages...)
+			result.Decrypted++
+			continue
+		case "missing_keys":
+			result.StillMissing++
+		default:
+			res.Status = "failed"
+			result.Failed++
+		}
+		if m.DecryptStatus == res.Status && m.DecryptError == res.ErrorString {
+			continue
+		}
+		m.DecryptStatus = res.Status
+		m.DecryptError = res.ErrorString
+		decrypted.Messages = append(decrypted.Messages, m)
+	}
+	if len(decrypted.Messages)+len(decrypted.Edits)+len(decrypted.Reactions)+len(decrypted.Redactions)+len(decrypted.DropMessages) == 0 {
+		return nil
+	}
+	return st.Apply(r.ctx, store.SyncStats{KeepSyncTime: true}, decrypted)
 }
 
 func (r *runtime) keysBackupPull(args []string) error {
@@ -135,12 +169,43 @@ func (r *runtime) keysBackupPull(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
-	return errors.New("server-side key backup pull is not implemented yet — export keys from Element (Settings → Security & Privacy → Export E2E room keys) and use `matcrawl keys import <path>` for now")
+
+	machine, closeFn, err := r.openCrypto()
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+
+	secret, err := promptSecret(r.stderr, "recovery key or security phrase: ")
+	if err != nil {
+		return err
+	}
+	if secret == "" {
+		return errors.New("no recovery key entered — run `matcrawl keys backup-pull` in an interactive terminal, or pipe the key on stdin")
+	}
+	backupKey, err := matrix.UnlockKeyBackup(r.ctx, machine, secret)
+	if err != nil {
+		return err
+	}
+	result, err := matrix.PullKeyBackup(r.ctx, machine, backupKey, func(p matrix.BackupPullResult) {
+		fmt.Fprintf(r.stderr, "keys backup-pull: %d sessions, %d new\n", p.Total, p.New)
+	})
+	if err != nil {
+		return err
+	}
+	if result.Failed > 0 {
+		fmt.Fprintf(r.stderr, "keys backup-pull: %d sessions could not be imported, first: %s\n", result.Failed, result.FirstError)
+	}
+	if result.New+result.Improved > 0 {
+		fmt.Fprintln(r.stderr, "run `matcrawl keys retry` to decrypt stored messages with the new keys")
+	}
+	return r.print(result)
 }
 
-// openCrypto returns an initialised CryptoHelper backed by the configured
-// session + db paths. The returned close function tears the helper down.
-func (r *runtime) openCrypto() (*cryptohelper.CryptoHelper, func(), error) {
+// openCrypto loads the local Olm machine for the configured session without
+// touching the server's device keys (see matrix.OpenMachine). The returned
+// close function releases the crypto database.
+func (r *runtime) openCrypto() (*crypto.OlmMachine, func(), error) {
 	session, err := matrix.LoadSession(sessionPath(r.dbPath))
 	if err != nil {
 		return nil, nil, err
@@ -152,12 +217,5 @@ func (r *runtime) openCrypto() (*cryptohelper.CryptoHelper, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	helper, err := matrix.OpenCrypto(r.ctx, client, matrix.DefaultCryptoPaths(r.dbPath))
-	if err != nil {
-		return nil, nil, err
-	}
-	closeFn := func() {
-		_ = helper.Close()
-	}
-	return helper, closeFn, nil
+	return matrix.OpenMachine(r.ctx, client, matrix.DefaultCryptoPaths(r.dbPath))
 }

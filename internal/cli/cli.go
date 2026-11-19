@@ -197,6 +197,10 @@ notes:
   FTS5. Messages carry their current (edited) text with edit history,
   reactions, and deletion markers; rooms carry spaces, upgrades and power
   levels. Backup writes age-encrypted shards to a git repo.
+
+  Decrypt E2EE history with "keys backup-pull" (your recovery key) or
+  "keys import" (an Element export), then "keys retry". Both prompt for a
+  secret, so run them in an interactive terminal.
 `)
 }
 

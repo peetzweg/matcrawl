@@ -61,18 +61,38 @@ session.
 
 ### Decrypt E2EE rooms
 
-Export your room keys from Element (Settings → Security & Privacy →
-Export E2E room keys → choose a passphrase), then:
+matcrawl decrypts with your room keys. It never registers a device or
+uploads keys.
+
+**From your key backup (recommended).** If you set up recovery in
+Element, pull every key your devices have backed up to the server:
+
+    matcrawl keys backup-pull
+
+It prompts for your recovery key (the `EsT…` key Element showed when you
+set up recovery) or security phrase. The backup holds keys from all your
+devices, including messages that arrived while a given Element install
+was closed. It only reads from the server.
+
+**From an Element export.** Alternatively, export room keys from Element
+(Settings → Security & Privacy → Export E2E room keys → choose a
+passphrase), then:
 
     matcrawl keys import ~/Downloads/element-keys.txt
 
-`matcrawl keys retry` re-runs decryption against every stored
-ciphertext event whose Megolm session you just imported. After a future
-sync, run it again if `matcrawl status` still reports
-`decrypt_failures > 0`.
+An export only holds the keys that one Element install has, so it can
+miss messages from times it wasn't running.
 
-> Server-side key backup pull (the 4S recovery-key path) is planned for a
-> follow-up release. For v0.1.0 the `.txt` export is the supported entry.
+Both commands prompt for a secret, so run them in an interactive
+terminal (or pipe the secret on stdin). Then decrypt what's stored:
+
+    matcrawl keys retry
+
+`keys retry` re-runs decryption on every stored message that is still
+encrypted. New messages bring new keys, so after later syncs run
+`keys backup-pull` and `keys retry` again. `matcrawl status` reports how
+many messages are still undecrypted. Deleted messages, and messages
+whose keys were never backed up, stay encrypted.
 
 ### Crawl
 
@@ -140,11 +160,11 @@ against a clean machine.
 
 ## E2EE caveats (v0)
 
-matcrawl decrypts encrypted rooms using the keys you import via
-`matcrawl keys import`. If you join a new encrypted room *after*
-exporting keys, re-run the export from Element and call
-`matcrawl keys import keys.txt` again. The v1 cross-signing /
-key-forwarding flow will eliminate this step.
+matcrawl doesn't receive room keys live the way Element does. It
+decrypts with the keys you pull from the backup or import, so run
+`matcrawl keys backup-pull` and `matcrawl keys retry` after syncing to
+read new messages. The v1 cross-signing / key-forwarding flow will
+eliminate this step.
 
 ## Not supported (v0)
 

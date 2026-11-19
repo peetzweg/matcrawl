@@ -300,3 +300,41 @@ func TestSnapshotRoundTrip(t *testing.T) {
 		t.Errorf("round-trip status = %+v, want rooms=1 messages=1", got)
 	}
 }
+
+// Rows that still lack keys stay undecrypted, so paging must advance past
+// them instead of returning the same head of the table on every call.
+func TestListUndecryptedPagesPastStillMissing(t *testing.T) {
+	st, ctx := openTestStore(t)
+	ts := time.Unix(1_700_000_000, 0).UTC()
+	var msgs []Message
+	for _, id := range []string{"$a", "$b", "$c", "$d", "$e"} {
+		msgs = append(msgs, Message{RoomID: "!r:x", EventID: id, Sender: "@a:x", OriginServerTS: ts,
+			MsgType: "m.room.encrypted", WasEncrypted: true, DecryptStatus: "missing_keys", RawJSON: `{"event_id":"` + id + `"}`})
+	}
+	msgs = append(msgs, Message{RoomID: "!r:x", EventID: "$plain", Sender: "@a:x", OriginServerTS: ts, MsgType: "m.text", Body: "hi"})
+	if err := st.Upsert(ctx, SyncStats{}, []Room{{ID: "!r:x"}}, nil, msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	var seen []string
+	var cursor int64
+	for page := 0; page < 10; page++ {
+		got, next, err := st.ListUndecrypted(ctx, cursor, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) == 0 {
+			break
+		}
+		if next <= cursor {
+			t.Fatalf("cursor did not advance: %d -> %d", cursor, next)
+		}
+		cursor = next
+		for _, m := range got {
+			seen = append(seen, m.EventID)
+		}
+	}
+	if want := 5; len(seen) != want {
+		t.Fatalf("saw %v, want %d undecrypted events once each", seen, want)
+	}
+}
