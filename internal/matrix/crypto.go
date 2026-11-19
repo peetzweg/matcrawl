@@ -135,8 +135,8 @@ func OpenMachine(ctx context.Context, client *mautrix.Client, paths CryptoPaths)
 
 	machine := crypto.NewOlmMachine(client, &log, cryptoStore, stateStore)
 	// Decrypting archived history needs neither sender device lookups (a
-	// /keys/query per unknown device) nor replay bookkeeping (a crypto DB
-	// write per message).
+	// /keys/query per unknown device) nor ratchet bookkeeping (rewriting the
+	// session after each message). The duplicate-index check still runs.
 	machine.DisableDecryptKeyFetching = true
 	machine.DisableRatchetTracking = true
 	if err := machine.Load(ctx); err != nil {
