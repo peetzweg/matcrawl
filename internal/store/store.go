@@ -508,54 +508,61 @@ func (s *Store) parentSpaces(ctx context.Context, labels map[string]string) (map
 // haven't been decrypted yet (decrypt_status = 'missing_keys' or 'failed').
 // Selects raw_json so callers can re-run them through OlmMachine after a
 // fresh key import.
-func (s *Store) ListUndecrypted(ctx context.Context, limit int) ([]Message, error) {
+//
+// Results page by rowid: pass 0 first, then the returned cursor, until no
+// rows come back. Paging by cursor rather than re-reading from the start
+// matters because rows that still lack keys stay in the result set and would
+// otherwise hide everything after them.
+func (s *Store) ListUndecrypted(ctx context.Context, afterRowID int64, limit int) ([]Message, int64, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		select room_id, event_id, sender, coalesce(sender_display_name,''),
+		select rowid, room_id, event_id, sender, coalesce(sender_display_name,''),
 		       origin_server_ts, msgtype, coalesce(body,''), coalesce(formatted_body,''),
 		       was_encrypted, coalesce(decrypt_status,''), coalesce(decrypt_error,''),
 		       coalesce(attachments_json,''),
 		       coalesce(thread_id,''), coalesce(reply_to_event_id,''), coalesce(raw_json,'')
 		from messages
 		where decrypt_status in ('missing_keys','failed') and coalesce(raw_json,'') <> ''
-		order by origin_server_ts asc
+		  and rowid > ?
+		order by rowid asc
 		limit ?
-	`, limit)
+	`, afterRowID, limit)
 	if err != nil {
-		return nil, err
+		return nil, afterRowID, err
 	}
 	defer func() { _ = rows.Close() }()
 	var out []Message
+	cursor := afterRowID
 	for rows.Next() {
 		var m Message
 		var ts int64
 		var wasEnc int
 		if err := rows.Scan(
-			&m.RoomID, &m.EventID, &m.Sender, &m.SenderDisplayName,
+			&cursor, &m.RoomID, &m.EventID, &m.Sender, &m.SenderDisplayName,
 			&ts, &m.MsgType, &m.Body, &m.FormattedBody,
 			&wasEnc, &m.DecryptStatus, &m.DecryptError,
 			&m.AttachmentsJSON,
 			&m.ThreadID, &m.ReplyToEventID, &m.RawJSON,
 		); err != nil {
-			return nil, err
+			return nil, afterRowID, err
 		}
 		m.OriginServerTS = fromUnix(ts)
 		m.WasEncrypted = wasEnc != 0
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, afterRowID, err
 	}
 	labels, err := s.RoomLabels(ctx)
 	if err != nil {
-		return nil, err
+		return nil, afterRowID, err
 	}
 	for i := range out {
 		out[i].RoomName = labels[out[i].RoomID]
 	}
-	return out, nil
+	return out, cursor, nil
 }
 
 // powerLevelSQL reads a member's power level from the room's

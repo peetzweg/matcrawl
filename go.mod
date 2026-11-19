@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	github.com/openclaw/crawlkit v0.17.2
+	github.com/rs/zerolog v1.35.1
 	go.mau.fi/util v0.11.0
 	golang.org/x/term v0.47.0
 	maunium.net/go/mautrix v0.32.0
@@ -18,11 +19,9 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
-	github.com/mattn/go-sqlite3 v1.14.52 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/petermattis/goid v0.0.0-20260918085751-abfca077860b // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/tidwall/gjson v1.20.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
