@@ -169,7 +169,34 @@ func (r *runtime) keysBackupPull(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
-	return errors.New("server-side key backup pull is not implemented yet — export keys from Element (Settings → Security & Privacy → Export E2E room keys) and use `matcrawl keys import <path>` for now")
+
+	machine, closeFn, err := r.openCrypto()
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+
+	secret, err := promptSecret(r.stderr, "recovery key or security phrase: ")
+	if err != nil {
+		return err
+	}
+	if secret == "" {
+		return errors.New("no recovery key entered — run `matcrawl keys backup-pull` in an interactive terminal, or pipe the key on stdin")
+	}
+	backupKey, err := matrix.UnlockKeyBackup(r.ctx, machine, secret)
+	if err != nil {
+		return err
+	}
+	result, err := matrix.PullKeyBackup(r.ctx, machine, backupKey, func(p matrix.BackupPullResult) {
+		fmt.Fprintf(r.stderr, "keys backup-pull: %d sessions, %d new\n", p.Total, p.New)
+	})
+	if err != nil {
+		return err
+	}
+	if result.New+result.Improved > 0 {
+		fmt.Fprintln(r.stderr, "run `matcrawl keys retry` to decrypt stored messages with the new keys")
+	}
+	return r.print(result)
 }
 
 // openCrypto loads the local Olm machine for the configured session without
