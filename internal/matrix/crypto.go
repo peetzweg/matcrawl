@@ -134,6 +134,11 @@ func OpenMachine(ctx context.Context, client *mautrix.Client, paths CryptoPaths)
 	}
 
 	machine := crypto.NewOlmMachine(client, &log, cryptoStore, stateStore)
+	// Decrypting archived history needs neither sender device lookups (a
+	// /keys/query per unknown device) nor replay bookkeeping (a crypto DB
+	// write per message).
+	machine.DisableDecryptKeyFetching = true
+	machine.DisableRatchetTracking = true
 	if err := machine.Load(ctx); err != nil {
 		closeFn()
 		return nil, nil, fmt.Errorf("load olm account: %w", err)

@@ -2,13 +2,16 @@ package matrix
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/crypto"
 	"maunium.net/go/mautrix/crypto/backup"
 	"maunium.net/go/mautrix/crypto/ssss"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 )
 
 // ErrWrongRecoveryKey means the recovery key or security phrase did not
@@ -63,27 +66,48 @@ type BackupPullResult struct {
 	Improved int `json:"improved"`
 	Known    int `json:"already_known"`
 	Failed   int `json:"failed"`
+	// FirstError is why the first failed session failed.
+	FirstError string `json:"first_error,omitempty"`
 }
 
+// ErrNoKeyBackup means the account has no server-side key backup.
+var ErrNoKeyBackup = errors.New("this account has no server-side key backup")
+
 // PullKeyBackup downloads the latest server-side key backup and stores every
-// Megolm session it holds. The backup is trusted because its public key
+// Megolm session it holds. The backup is trusted only if its public key
 // matches the private key from secret storage. Existing sessions are only
 // replaced by copies that start at an earlier message index.
 //
 // Only reads from the server. progress, if set, is called periodically.
 func PullKeyBackup(ctx context.Context, machine *crypto.OlmMachine, backupKey *backup.MegolmBackupKey, progress func(BackupPullResult)) (BackupPullResult, error) {
 	var res BackupPullResult
-	info, err := machine.GetAndVerifyLatestKeyBackupVersion(ctx, backupKey)
-	if err != nil {
+	info, err := machine.Client.GetKeyBackupLatestVersion(ctx)
+	if errors.Is(err, mautrix.MNotFound) {
+		return res, ErrNoKeyBackup
+	} else if err != nil {
 		return res, fmt.Errorf("check key backup: %w", err)
-	} else if info == nil {
-		return res, errors.New("this account has no server-side key backup")
 	}
 	res.Version = string(info.Version)
+	if info.Algorithm != id.KeyBackupAlgorithmMegolmBackupV1 {
+		return res, fmt.Errorf("key backup version %s uses unsupported algorithm %s", info.Version, info.Algorithm)
+	}
+	// Trust the backup only through the key the user unlocked. mautrix would
+	// fall back to signatures checked against cross-signing keys fetched from
+	// the server; a backup we can't decrypt is useless to us anyway.
+	derived := id.Ed25519(base64.RawStdEncoding.EncodeToString(backupKey.PublicKey().Bytes()))
+	if info.AuthData.PublicKey != derived {
+		return res, fmt.Errorf("the server's key backup (version %s) was made with a different key than the one in your secret storage; set up recovery again in Element", info.Version)
+	}
 
 	keys, err := machine.Client.GetKeyBackup(ctx, info.Version)
 	if err != nil {
 		return res, fmt.Errorf("download key backup: %w", err)
+	}
+	fail := func(err error) {
+		res.Failed++
+		if res.FirstError == "" {
+			res.FirstError = err.Error()
+		}
 	}
 	for roomID, room := range keys.Rooms {
 		for sessionID, data := range room.Sessions {
@@ -94,13 +118,16 @@ func PullKeyBackup(ctx context.Context, machine *crypto.OlmMachine, backupKey *b
 			}
 			sess, err := data.SessionData.Decrypt(backupKey)
 			if err != nil {
-				res.Failed++
+				fail(fmt.Errorf("decrypt session %s: %w", sessionID, err))
 				continue
 			}
 			imported, err := machine.ImportRoomKeyFromBackup(ctx, info.Version, roomID, sessionID, sess)
 			switch {
+			case errors.Is(err, crypto.ErrFailedToStoreNewInboundGroupSessionFromBackup):
+				// A local database failure, not a bad session: stop.
+				return res, err
 			case err != nil:
-				res.Failed++
+				fail(fmt.Errorf("import session %s: %w", sessionID, err))
 			case existing == nil:
 				res.New++
 			case imported.Internal.FirstKnownIndex() < existing.Internal.FirstKnownIndex():
@@ -112,6 +139,9 @@ func PullKeyBackup(ctx context.Context, machine *crypto.OlmMachine, backupKey *b
 				progress(res)
 			}
 		}
+	}
+	if res.Total > 0 && res.Failed == res.Total {
+		return res, fmt.Errorf("could not import any of the %d sessions in the key backup: %s", res.Total, res.FirstError)
 	}
 	return res, nil
 }

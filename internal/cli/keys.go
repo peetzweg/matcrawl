@@ -160,7 +160,7 @@ func retryPage(r *runtime, st *store.Store, machine *crypto.OlmMachine, pending 
 	if len(decrypted.Messages)+len(decrypted.Edits)+len(decrypted.Reactions)+len(decrypted.Redactions)+len(decrypted.DropMessages) == 0 {
 		return nil
 	}
-	return st.Apply(r.ctx, store.SyncStats{}, decrypted)
+	return st.Apply(r.ctx, store.SyncStats{KeepSyncTime: true}, decrypted)
 }
 
 func (r *runtime) keysBackupPull(args []string) error {
@@ -192,6 +192,9 @@ func (r *runtime) keysBackupPull(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	if result.Failed > 0 {
+		fmt.Fprintf(r.stderr, "keys backup-pull: %d sessions could not be imported, first: %s\n", result.Failed, result.FirstError)
 	}
 	if result.New+result.Improved > 0 {
 		fmt.Fprintln(r.stderr, "run `matcrawl keys retry` to decrypt stored messages with the new keys")

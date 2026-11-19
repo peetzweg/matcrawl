@@ -169,3 +169,76 @@ func mustJSON(t *testing.T, v any) json.RawMessage {
 	}
 	return buf
 }
+
+// The backup must be trusted only through the unlocked key: a backup made
+// with another key is an error, not a silent "0 imported", and the check
+// must not fall back to fetching cross-signing keys. No backup at all gets a
+// clear error.
+func TestPullKeyBackupRejectsUntrustedOrMissingBackup(t *testing.T) {
+	ssssKey, _ := ssss.NewKey("")
+	stored, _ := backup.NewMegolmBackupKey()
+	other, _ := backup.NewMegolmBackupKey()
+
+	for _, tc := range []struct {
+		name    string
+		version func(w http.ResponseWriter)
+		want    string
+	}{
+		{"different key", func(w http.ResponseWriter) {
+			_ = json.NewEncoder(w).Encode(mautrix.RespRoomKeysVersion[backup.MegolmAuthData]{
+				Algorithm: id.KeyBackupAlgorithmMegolmBackupV1, Version: "2",
+				AuthData: backup.MegolmAuthData{PublicKey: id.Ed25519(base64.RawStdEncoding.EncodeToString(other.PublicKey().Bytes()))},
+			})
+		}, "different key"},
+		{"no backup", func(w http.ResponseWriter) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"errcode":"M_NOT_FOUND","error":"No current backup version"}`))
+		}, ErrNoKeyBackup.Error()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			routes := map[string]any{
+				"/account_data/m.secret_storage.default_key":       map[string]string{"key": ssssKey.ID},
+				"/account_data/m.secret_storage.key." + ssssKey.ID: ssssKey.Metadata,
+				"/account_data/" + event.AccountDataMegolmBackupKey.Type: ssss.EncryptedAccountDataEventContent{
+					Encrypted: map[string]ssss.EncryptedKeyData{ssssKey.ID: ssssKey.Encrypt(event.AccountDataMegolmBackupKey.Type, stored.Bytes())},
+				},
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method != http.MethodGet:
+					t.Errorf("unexpected write: %s %s", r.Method, r.URL.Path)
+					http.Error(w, "read-only", http.StatusForbidden)
+				case strings.HasSuffix(r.URL.Path, "/room_keys/version"):
+					tc.version(w)
+				case strings.HasSuffix(r.URL.Path, "/room_keys/keys"):
+					t.Errorf("downloaded an untrusted backup")
+				default:
+					for suffix, body := range routes {
+						if strings.HasSuffix(r.URL.Path, suffix) {
+							_ = json.NewEncoder(w).Encode(body)
+							return
+						}
+					}
+					t.Errorf("unexpected request: %s", r.URL.Path)
+				}
+			}))
+			defer srv.Close()
+
+			client, _ := New(Session{Homeserver: srv.URL, UserID: "@me:example.org", DeviceID: "ELEMENTDEV", AccessToken: "tok"})
+			dir := t.TempDir()
+			ctx := context.Background()
+			machine, closeFn, err := OpenMachine(ctx, client, CryptoPaths{CryptoDB: filepath.Join(dir, "crypto.db"), PickleKey: filepath.Join(dir, "pickle.key")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeFn()
+			key, err := UnlockKeyBackup(ctx, machine, ssssKey.RecoveryKey())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := PullKeyBackup(ctx, machine, key, nil); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}
