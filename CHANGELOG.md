@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/peetzweg/matcrawl/compare/v0.4.0...v0.5.0) (2026-11-19)
+
+
+### Features
+
+* pull room keys from the server-side key backup with `keys backup-pull` ([e5b29b7](https://github.com/peetzweg/matcrawl/commit/e5b29b7d63cf544dbdc1597c15abdcaaabce837b))
+
+
+### Bug Fixes
+
+* `keys import` and `keys retry` no longer fail for accounts logged in with an Element session ([e5b29b7](https://github.com/peetzweg/matcrawl/commit/e5b29b7d63cf544dbdc1597c15abdcaaabce837b))
+* `keys retry` decrypts every stored message, not just the oldest 5000 ([e5b29b7](https://github.com/peetzweg/matcrawl/commit/e5b29b7d63cf544dbdc1597c15abdcaaabce837b))
+* decrypt messages that arrived through sync, which were stored without their room ([e5b29b7](https://github.com/peetzweg/matcrawl/commit/e5b29b7d63cf544dbdc1597c15abdcaaabce837b))
+* messages fetched again by sync no longer revert to undecrypted ([e5b29b7](https://github.com/peetzweg/matcrawl/commit/e5b29b7d63cf544dbdc1597c15abdcaaabce837b))
+
 ## [0.4.0](https://github.com/peetzweg/matcrawl/compare/v0.3.0...v0.4.0) (2026-10-22)
 
 
