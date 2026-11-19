@@ -167,8 +167,10 @@ type DecryptResult struct {
 
 // DecryptStored attempts to decrypt a previously stored m.room.encrypted
 // event by re-parsing its raw JSON and running it through the OlmMachine.
+// roomID is the room the row belongs to; it fills in for events stored from
+// /sync before room_id was added to their raw JSON.
 // Returns a result that the caller can fold back into the store row.
-func DecryptStored(ctx context.Context, machine *crypto.OlmMachine, raw string) DecryptResult {
+func DecryptStored(ctx context.Context, machine *crypto.OlmMachine, roomID id.RoomID, raw string) DecryptResult {
 	if machine == nil {
 		return DecryptResult{Status: "failed", ErrorString: "no OlmMachine"}
 	}
@@ -177,6 +179,9 @@ func DecryptStored(ctx context.Context, machine *crypto.OlmMachine, raw string) 
 		return DecryptResult{Status: "failed", ErrorString: "raw_json unparseable: " + err.Error()}
 	}
 	evt.Type = event.EventEncrypted
+	if evt.RoomID == "" {
+		evt.RoomID = roomID
+	}
 	if err := parseContent(&evt, event.EventEncrypted); err != nil {
 		return DecryptResult{Status: "failed", ErrorString: "encrypted content unparseable: " + err.Error()}
 	}

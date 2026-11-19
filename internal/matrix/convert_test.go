@@ -6,6 +6,8 @@ import (
 
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
+
+	"github.com/peetzweg/matcrawl/internal/store"
 )
 
 func TestEventToMessagePlainText(t *testing.T) {
@@ -127,5 +129,37 @@ func TestMemberAccumulator(t *testing.T) {
 	got := ma.result()
 	if len(got) != 2 {
 		t.Fatalf("members = %d, want 2", len(got))
+	}
+}
+
+// /sync timeline events carry no room_id. The stored raw JSON must include
+// it, or the event can never be decrypted later: Megolm sessions are looked
+// up by room.
+func TestAppendEventStoresRoomIDForSyncEvents(t *testing.T) {
+	raw := []byte(`{
+		"event_id": "$enc1",
+		"sender": "@bob:example.org",
+		"origin_server_ts": 1700000060000,
+		"type": "m.room.encrypted",
+		"content": {"algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "AAAA"}
+	}`)
+	var evt event.Event
+	if err := json.Unmarshal(raw, &evt); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	evt.Type = event.EventEncrypted
+	var b store.Batch
+	appendEvent(&b, id.RoomID("!r:example.org"), &evt)
+	if len(b.Messages) != 1 {
+		t.Fatalf("messages = %d, want 1", len(b.Messages))
+	}
+	var stored struct {
+		RoomID string `json:"room_id"`
+	}
+	if err := json.Unmarshal([]byte(b.Messages[0].RawJSON), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.RoomID != "!r:example.org" {
+		t.Errorf("raw_json room_id = %q, want !r:example.org", stored.RoomID)
 	}
 }

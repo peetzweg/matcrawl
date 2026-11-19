@@ -37,7 +37,7 @@ func TestOpenMachineDecryptsStoredWithoutServer(t *testing.T) {
 		`"event_id":"$evt","room_id":"!room:example.org","content":{"algorithm":"m.megolm.v1.aes-sha2",` +
 		`"ciphertext":"` + strings.Repeat("A", 344) + `","device_id":"ALICEDEV","sender_key":"` + strings.Repeat("S", 43) + `",` +
 		`"session_id":"` + strings.Repeat("I", 43) + `"}}`
-	res := DecryptStored(ctx, machine, raw)
+	res := DecryptStored(ctx, machine, "!room:example.org", raw)
 	if res.Status != "missing_keys" {
 		t.Fatalf("Status = %q (%s), want missing_keys", res.Status, res.ErrorString)
 	}

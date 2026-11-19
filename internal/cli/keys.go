@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"maunium.net/go/mautrix/crypto"
+	"maunium.net/go/mautrix/id"
 
 	"github.com/peetzweg/matcrawl/internal/matrix"
 	"github.com/peetzweg/matcrawl/internal/store"
@@ -132,7 +133,7 @@ func (r *runtime) keysRetry(args []string) error {
 func retryPage(r *runtime, st *store.Store, machine *crypto.OlmMachine, pending []store.Message, result *keysRetryResult) error {
 	var decrypted store.Batch
 	for _, m := range pending {
-		res := matrix.DecryptStored(r.ctx, machine, m.RawJSON)
+		res := matrix.DecryptStored(r.ctx, machine, id.RoomID(m.RoomID), m.RawJSON)
 		switch res.Status {
 		case "ok":
 			b := matrix.DecryptedBatch(m, res.Event)
